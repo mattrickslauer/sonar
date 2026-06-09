@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+:root {
+  --background: #05070a;
+  --foreground: #e6f0ee;
+
+  /* Sonar radar chrome */
+  --sonar: #34e3a0;
+  --sonar-dim: #1b8c63;
+  --grid: rgba(52, 227, 160, 0.16);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-sonar: var(--sonar);
+  --color-sonar-dim: var(--sonar-dim);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  overscroll-behavior: none;
+}
+
+/* ---- Radar sweep + rings ---- */
+@keyframes sonar-sweep {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes sonar-ping {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.7;
+  }
+  80%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+@keyframes wp-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--wp-color, var(--sonar));
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 14px 3px var(--wp-color, var(--sonar));
+    opacity: 0.92;
+  }
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(110%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.animate-sweep {
+  animation: sonar-sweep 5s linear infinite;
+}
+.animate-sheet {
+  animation: sheet-up 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Mapbox dark tweaks */
+.mapboxgl-ctrl-logo,
+.mapboxgl-ctrl-bottom-right,
+.mapboxgl-ctrl-bottom-left {
+  opacity: 0.35;
+}
+.mapboxgl-canvas:focus {
+  outline: none;
+}
+
+/* thin scrollbars in the channel dock */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

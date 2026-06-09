@@ -1,0 +1,28 @@
+# Internal — never publish
+INTERNAL_STRATEGY.md
+
+# Dependencies
+node_modules/
+
+# Next.js / build
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Vercel
+.vercel
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# AWS / local
+.aws-sam/
+*.local
+
+# Logs / OS
+*.log
+.DS_Store
