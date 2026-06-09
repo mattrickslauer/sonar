@@ -1,0 +1,24 @@
+{
+  "name": "sonar-infra",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "sonar": "bin/sonar.ts"
+  },
+  "scripts": {
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.170.0",
+    "constructs": "^10.4.2",
+    "source-map-support": "^0.5.21"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "aws-cdk": "^2.170.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  }
+}
