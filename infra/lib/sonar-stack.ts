@@ -8,6 +8,11 @@ import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as dsql from "aws-cdk-lib/aws-dsql";
+import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
+import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import * as cloudtrail from "aws-cdk-lib/aws-cloudtrail";
+import * as logs from "aws-cdk-lib/aws-logs";
+import * as s3 from "aws-cdk-lib/aws-s3";
 
 /**
  * Sonar data layer.
@@ -74,18 +79,34 @@ export class SonarStack extends cdk.Stack {
       DSQL_ENDPOINT: dsqlEndpoint,
     };
 
-    const makeFn = (name: string, dir: string, env: Record<string, string> = {}) =>
+    // Shared layer carrying the DSQL connection deps (pg + IAM signer) for the
+    // promote/meter consumers. The Node 20 runtime bundles the core AWS SDK v3
+    // (DynamoDB, API Gateway Management API) but not pg or the DSQL signer.
+    const dsqlLayer = new lambda.LayerVersion(this, "DsqlDepsLayer", {
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda", "layers", "dsql")),
+      compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
+      description: "pg + @aws-sdk/dsql-signer for the DSQL-touching consumers",
+    });
+
+    const makeFn = (
+      name: string,
+      dir: string,
+      opts: { env?: Record<string, string>; layers?: lambda.ILayerVersion[] } = {},
+    ) =>
       new lambda.Function(this, name, {
         runtime: lambda.Runtime.NODEJS_20_X,
         handler: "index.handler",
         code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda", dir)),
         timeout: cdk.Duration.seconds(30),
-        environment: { ...commonEnv, ...env },
+        environment: { ...commonEnv, ...(opts.env ?? {}) },
+        layers: opts.layers,
       });
 
     // Live fan-out: stream INSERT of a waypoint → push to channel subscribers.
     const fanout = makeFn("FanoutConsumerFn", "fanout");
-    table.grantReadData(fanout); // reads CONN#<channel> to find subscribers
+    // Reads CONN#<channel> to find subscribers; prunes stale (410) connections
+    // and writes USAGE# message-delivery events for the meter consumer.
+    table.grantReadWriteData(fanout);
     fanout.addEventSource(
       new DynamoEventSource(table, {
         startingPosition: lambda.StartingPosition.LATEST,
@@ -102,7 +123,10 @@ export class SonarStack extends cdk.Stack {
 
     // Promotion: stream MODIFY where realLove crosses threshold AND human →
     // upsert into DSQL greatest_hits, and flag the source item promoted=true.
-    const promote = makeFn("PromoteConsumerFn", "promote", { PROMOTE_THRESHOLD: "40" });
+    const promote = makeFn("PromoteConsumerFn", "promote", {
+      env: { PROMOTE_THRESHOLD: "40" },
+      layers: [dsqlLayer],
+    });
     table.grantReadWriteData(promote);
     promote.addToRolePolicy(dsqlConnect);
     promote.addEventSource(
@@ -120,7 +144,7 @@ export class SonarStack extends cdk.Stack {
     );
 
     // Metering: stream INSERT of USAGE#... events → atomic rollup → DSQL.
-    const meter = makeFn("MeterConsumerFn", "meter");
+    const meter = makeFn("MeterConsumerFn", "meter", { layers: [dsqlLayer] });
     table.grantReadData(meter);
     meter.addToRolePolicy(dsqlConnect);
     meter.addEventSource(
@@ -151,11 +175,97 @@ export class SonarStack extends cdk.Stack {
     });
 
     // ---------------------------------------------------------------------
+    // Live channel — API Gateway WebSocket API
+    // ---------------------------------------------------------------------
+    // The browser opens one socket per session (`?channels=…`). $connect records
+    // a CONN#<channel> fan-out target per subscribed channel; $disconnect cleans
+    // them up (via GSI1 keyed by connId) and emits connection-minutes usage. The
+    // fanout stream consumer pushes new waypoints to these sockets.
+    const wsConnect = makeFn("WsConnectFn", "ws-connect");
+    table.grantReadWriteData(wsConnect);
+    const wsDisconnect = makeFn("WsDisconnectFn", "ws-disconnect");
+    table.grantReadWriteData(wsDisconnect); // queries GSI1, deletes, writes USAGE#
+
+    const wsApi = new apigwv2.WebSocketApi(this, "SonarWebSocketApi", {
+      apiName: "sonar-ws",
+      connectRouteOptions: {
+        integration: new WebSocketLambdaIntegration("WsConnectInteg", wsConnect),
+      },
+      disconnectRouteOptions: {
+        integration: new WebSocketLambdaIntegration("WsDisconnectInteg", wsDisconnect),
+      },
+    });
+    const wsStage = new apigwv2.WebSocketStage(this, "SonarWebSocketStage", {
+      webSocketApi: wsApi,
+      stageName: "live",
+      autoDeploy: true,
+    });
+
+    // Let fanout call back into connected sockets, and tell it where the API is.
+    fanout.addEnvironment("WS_ENDPOINT", wsStage.callbackUrl);
+    wsApi.grantManageConnections(fanout);
+
+    // ---------------------------------------------------------------------
+    // Observability — CloudTrail management events → CloudWatch Logs
+    // ---------------------------------------------------------------------
+    // The audit/debug feed for our CDK deploys: records account management
+    // events (CloudFormation, IAM, Lambda, DynamoDB/DSQL control-plane — i.e.
+    // everything this stack touches) and streams them to CloudWatch Logs so
+    // they're queryable with Logs Insights. The pre-existing `lambda-events`
+    // trail only captures Lambda *data* events, so this is the first
+    // management-events trail in the account (free first copy).
+
+    // S3 is mandatory for CloudTrail (durable store); CloudWatch is the live
+    // query surface. We own the bucket so `cdk destroy` cleans up.
+    const trailBucket = new s3.Bucket(this, "TrailArchiveBucket", {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      lifecycleRules: [{ expiration: cdk.Duration.days(30) }],
+      // Hackathon: tear down cleanly. Switch to RETAIN for anything real.
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    // Short retention — this is a hackathon debug feed, not compliance
+    // retention (that's what the S3 archive is for).
+    const trailLogGroup = new logs.LogGroup(this, "TrailLogGroup", {
+      logGroupName: "/sonar/cloudtrail",
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const trail = new cloudtrail.Trail(this, "SonarTrail", {
+      trailName: "sonar-management-trail",
+      bucket: trailBucket,
+      sendToCloudWatchLogs: true,
+      cloudWatchLogGroup: trailLogGroup,
+      enableFileValidation: true,
+      // Both reads and writes of management events (CreateStack, PutRolePolicy,
+      // UpdateFunctionCode, etc.). Data events stay off — high volume, and the
+      // `lambda-events` trail already covers Lambda data events.
+      managementEvents: cloudtrail.ReadWriteType.ALL,
+      // Single region keeps us in the free first-copy tier; the app lives in
+      // us-east-1 anyway.
+      isMultiRegionTrail: false,
+    });
+
+    // ---------------------------------------------------------------------
     // Outputs
     // ---------------------------------------------------------------------
+    new cdk.CfnOutput(this, "TrailLogGroupName", {
+      value: trailLogGroup.logGroupName,
+      description: "CloudWatch Logs group for CloudTrail management events",
+    });
+    new cdk.CfnOutput(this, "TrailArn", { value: trail.trailArn });
     new cdk.CfnOutput(this, "TableName", { value: table.tableName });
     new cdk.CfnOutput(this, "TableStreamArn", { value: table.tableStreamArn ?? "" });
     new cdk.CfnOutput(this, "DsqlClusterArn", { value: dsqlCluster.attrResourceArn });
     new cdk.CfnOutput(this, "DsqlEndpoint", { value: dsqlEndpoint });
+    new cdk.CfnOutput(this, "WsApiEndpoint", {
+      value: wsStage.url,
+      description: "wss:// URL for the radar client (set as NEXT_PUBLIC_WS_URL)",
+    });
+    new cdk.CfnOutput(this, "WsCallbackUrl", { value: wsStage.callbackUrl });
   }
 }

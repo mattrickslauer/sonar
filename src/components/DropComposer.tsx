@@ -2,10 +2,16 @@
 
 import { useState } from "react";
 import { CHANNELS, ChannelId } from "@/lib/channels";
-import { MediaKind, MEDIA_ICON } from "@/lib/waypoints";
+import {
+  MediaKind,
+  MEDIA_ICON,
+  LIFESPAN_PRESETS,
+  DEFAULT_LIFESPAN_SECONDS,
+  lifespanLabel,
+} from "@/lib/waypoints";
 
 interface Props {
-  onDrop: (channel: ChannelId, kind: MediaKind, text: string) => void;
+  onDrop: (channel: ChannelId, kind: MediaKind, text: string, lifespanSeconds: number) => void;
   onClose: () => void;
 }
 
@@ -15,6 +21,7 @@ export default function DropComposer({ onDrop, onClose }: Props) {
   const [channel, setChannel] = useState<ChannelId>("social");
   const [kind, setKind] = useState<MediaKind>("text");
   const [text, setText] = useState("");
+  const [lifespan, setLifespan] = useState(DEFAULT_LIFESPAN_SECONDS);
 
   return (
     <div className="absolute inset-0 z-50 flex items-end bg-black/50 backdrop-blur-sm">
@@ -74,12 +81,32 @@ export default function DropComposer({ onDrop, onClose }: Props) {
           className="mb-4 w-full resize-none rounded-2xl border border-white/12 bg-black/40 p-3.5 text-[14px] text-white placeholder:text-white/35 focus:border-sonar/50 focus:outline-none"
         />
 
+        <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-white/40">
+          lifespan
+        </p>
+        <div className="mb-4 flex gap-2">
+          {LIFESPAN_PRESETS.map((p) => (
+            <button
+              key={p.seconds}
+              onClick={() => setLifespan(p.seconds)}
+              className="flex-1 rounded-xl border py-2 text-[13px]"
+              style={{
+                borderColor: lifespan === p.seconds ? "var(--sonar)" : "rgba(255,255,255,.12)",
+                background: lifespan === p.seconds ? "rgba(52,227,160,.12)" : "transparent",
+                color: lifespan === p.seconds ? "#fff" : "rgba(255,255,255,.6)",
+              }}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
         <button
-          onClick={() => text.trim() && onDrop(channel, kind, text.trim())}
+          onClick={() => text.trim() && onDrop(channel, kind, text.trim(), lifespan)}
           disabled={!text.trim()}
           className="w-full rounded-2xl bg-sonar py-3.5 text-[15px] font-semibold text-[#04110c] disabled:opacity-40"
         >
-          Drop · expires in 24h
+          Drop · expires in {lifespanLabel(lifespan)}
         </button>
       </div>
     </div>

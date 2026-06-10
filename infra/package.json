@@ -8,11 +8,14 @@
   "scripts": {
     "synth": "cdk synth",
     "diff": "cdk diff",
-    "deploy": "cdk deploy"
+    "deploy": "cdk deploy",
+    "migrate": "node scripts/migrate-dsql.mjs"
   },
   "dependencies": {
+    "@aws-sdk/dsql-signer": "^3.731.0",
     "aws-cdk-lib": "^2.170.0",
     "constructs": "^10.4.2",
+    "pg": "^8.13.1",
     "source-map-support": "^0.5.21"
   },
   "devDependencies": {

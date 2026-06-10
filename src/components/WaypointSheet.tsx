@@ -15,9 +15,18 @@ const PROMOTE_THRESHOLD = 40;
 
 export default function WaypointSheet({ wp, loved, onLove, onClose }: Props) {
   const ch = CHANNEL_MAP[wp.channel];
-  const loveCount = wp.love + (loved ? 1 : 0);
+  // wp.love is kept authoritative (optimistically adjusted on love/unlove).
+  const loveCount = wp.love;
   const pct = Math.min(100, (loveCount / PROMOTE_THRESHOLD) * 100);
   const promoted = loveCount >= PROMOTE_THRESHOLD;
+
+  const minsLeft = Math.max(0, (wp.expiresAt - Date.now()) / 60000);
+  const expiresIn =
+    minsLeft < 60
+      ? `${Math.round(minsLeft)}m`
+      : minsLeft < 1440
+        ? `${Math.floor(minsLeft / 60)}h`
+        : `${Math.floor(minsLeft / 1440)}d`;
 
   return (
     <div className="absolute inset-x-0 bottom-0 z-40 px-3 pb-3">
@@ -41,7 +50,7 @@ export default function WaypointSheet({ wp, loved, onLove, onClose }: Props) {
               </div>
               <p className="font-mono text-[11px] text-white/45">
                 @{wp.author} · {formatAge(wp.minutesAgo)} ·{" "}
-                {formatDistance(wp.meters)} away
+                {formatDistance(wp.meters)} away · expires in {expiresIn}
               </p>
             </div>
           </div>
@@ -82,7 +91,7 @@ export default function WaypointSheet({ wp, loved, onLove, onClose }: Props) {
         <div className="mt-4 flex items-center gap-2.5">
           <button
             onClick={() => onLove(wp.id)}
-            disabled={loved}
+            title={loved ? "Tap to unlove" : "Love it"}
             className="flex flex-1 items-center justify-center gap-2 rounded-2xl border py-3 text-[14px] font-semibold transition-colors"
             style={{
               borderColor: loved ? ch.color : "rgba(255,255,255,.12)",
