@@ -1,5 +1,5 @@
 import { ChannelId } from "./channels";
-import { LngLat, offset } from "./geo";
+import { LngLat, offset, bearing, distance } from "./geo";
 
 export type MediaKind = "text" | "photo" | "video" | "voice";
 
@@ -10,14 +10,33 @@ export interface Waypoint {
   author: string;
   text: string;
   pos: LngLat;
-  minutesAgo: number; // 0–1440 (24h window)
+  minutesAgo: number; // age since createdAt
   love: number;
   promoted: boolean; // crossed the love threshold → "greatest hits"
   bearing: number; // for layout only
   meters: number;
+  expiresAt: number; // epoch ms when the waypoint is destroyed (ttl)
+  lifespanMs: number; // total chosen lifespan; drives the countdown ring
 }
 
-const PROMOTE_THRESHOLD = 40;
+export const PROMOTE_THRESHOLD = 40;
+
+// Author-selectable lifespans (capped at 24h to keep the feed ephemeral).
+export const LIFESPAN_PRESETS: { label: string; seconds: number }[] = [
+  { label: "15m", seconds: 15 * 60 },
+  { label: "1h", seconds: 60 * 60 },
+  { label: "6h", seconds: 6 * 60 * 60 },
+  { label: "12h", seconds: 12 * 60 * 60 },
+  { label: "24h", seconds: 24 * 60 * 60 },
+];
+export const DEFAULT_LIFESPAN_SECONDS = 24 * 60 * 60;
+
+export function lifespanLabel(seconds: number): string {
+  const match = LIFESPAN_PRESETS.find((p) => p.seconds === seconds);
+  if (match) return match.label;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${Math.round(seconds / 3600)}h`;
+}
 
 // Tiny seeded PRNG (mulberry32) so the map is stable across renders.
 function mulberry32(seed: number) {
@@ -66,6 +85,7 @@ export function generateWaypoints(center: LngLat, seed = 1337): Waypoint[] {
     const bearing = rand() * 360;
     const minutesAgo = Math.floor(rand() * 1440);
     const love = Math.floor(rand() * 70);
+    const lifespanMs = 24 * 60 * 60 * 1000;
     return {
       id: `wp_${i}`,
       channel: s.channel,
@@ -78,6 +98,8 @@ export function generateWaypoints(center: LngLat, seed = 1337): Waypoint[] {
       promoted: love >= PROMOTE_THRESHOLD,
       bearing,
       meters,
+      lifespanMs,
+      expiresAt: Date.now() + (lifespanMs - minutesAgo * 60000),
     };
   });
 }
@@ -105,6 +127,7 @@ export async function postDrop(input: {
   text: string;
   center: LngLat;
   author?: string;
+  lifespanSeconds?: number;
 }): Promise<Waypoint> {
   const res = await fetch("/api/waypoints", {
     method: "POST",
@@ -116,11 +139,114 @@ export async function postDrop(input: {
       lat: input.center.lat,
       lng: input.center.lng,
       author: input.author ?? "you",
+      lifespanSeconds: input.lifespanSeconds,
     }),
   });
   if (!res.ok) throw new Error(`postDrop failed: ${res.status}`);
   const data = await res.json();
   return data.waypoint as Waypoint;
+}
+
+/** The normalized waypoint payload the fanout consumer pushes over WebSocket. */
+export interface RawWaypoint {
+  id: string;
+  channel: ChannelId;
+  kind: MediaKind;
+  author: string;
+  text: string;
+  lat: number;
+  lng: number;
+  createdAt: number;
+  ttl?: number; // epoch seconds; expiry for the countdown ring
+  love: number;
+  promoted: boolean;
+  actorType?: string;
+}
+
+/** A pushed RawWaypoint → the Waypoint shape, with layout relative to `center`. */
+export function rawToWaypoint(raw: RawWaypoint, center: LngLat): Waypoint {
+  const pos: LngLat = { lng: raw.lng, lat: raw.lat };
+  const expiresAt = raw.ttl
+    ? raw.ttl * 1000
+    : raw.createdAt + DEFAULT_LIFESPAN_SECONDS * 1000;
+  return {
+    id: raw.id,
+    channel: raw.channel,
+    kind: raw.kind,
+    author: raw.author,
+    text: raw.text,
+    pos,
+    minutesAgo: Math.max(0, (Date.now() - raw.createdAt) / 60000),
+    love: raw.love ?? 0,
+    promoted: !!raw.promoted,
+    bearing: bearing(center, pos),
+    meters: distance(center, pos),
+    expiresAt,
+    lifespanMs: Math.max(1, expiresAt - raw.createdAt),
+  };
+}
+
+export interface LoveResult {
+  love: number;
+  realLove: number;
+  counted: boolean;
+}
+
+export interface LoveArgs {
+  id: string;
+  channel: ChannelId;
+  lat: number;
+  lng: number;
+  user: string;
+}
+
+/** Persist a love and return the server's authoritative counters. */
+export async function postLove(input: LoveArgs): Promise<LoveResult> {
+  const res = await fetch("/api/love", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`postLove failed: ${res.status}`);
+  return (await res.json()) as LoveResult;
+}
+
+/** Undo a love and return the server's authoritative counters. */
+export async function postUnlove(input: LoveArgs): Promise<LoveResult> {
+  const res = await fetch("/api/love", {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`postUnlove failed: ${res.status}`);
+  return (await res.json()) as LoveResult;
+}
+
+/** Which of these waypoint ids has the user already loved? Seeds loved-state. */
+export async function fetchLoves(ids: string[], user: string): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const res = await fetch("/api/loves", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ids, user }),
+  });
+  if (!res.ok) throw new Error(`fetchLoves failed: ${res.status}`);
+  const data = await res.json();
+  return data.loved as string[];
+}
+
+/** Heartbeat the user's location so the bot tick keeps the area lively. */
+export async function postPresence(input: {
+  lat: number;
+  lng: number;
+  user: string;
+}): Promise<void> {
+  await fetch("/api/presence", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+    keepalive: true,
+  });
 }
 
 export const MEDIA_ICON: Record<MediaKind, string> = {

@@ -32,6 +32,7 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  const lifespanSeconds = Number(body?.lifespanSeconds);
   const waypoint = await putWaypoint({
     channel: body.channel,
     kind: body.kind ?? "text",
@@ -39,6 +40,7 @@ export async function POST(request: Request) {
     lat,
     lng,
     author: body.author,
+    lifespanSeconds: Number.isFinite(lifespanSeconds) ? lifespanSeconds : undefined,
   });
   return Response.json({ waypoint }, { status: 201 });
 }
