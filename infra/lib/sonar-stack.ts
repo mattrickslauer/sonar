@@ -95,6 +95,10 @@ export class SonarStack extends cdk.Stack {
       enforceSSL: true,
       lifecycleRules: [
         {
+          // Only the ephemeral user uploads under media/ expire. Bot seed media
+          // under seed/ is permanent (referenced by the always-on bot tick).
+          id: "expire-ephemeral-uploads",
+          prefix: "media/",
           expiration: cdk.Duration.days(2),
           abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
         },
@@ -131,6 +135,12 @@ export class SonarStack extends cdk.Stack {
           sid: "SonarMediaObjectRW",
           actions: ["s3:PutObject", "s3:GetObject"],
           resources: [mediaBucket.arnForObjects("media/*")],
+        }),
+        // Read-only on the bot seed media so the view route can presign GETs.
+        new iam.PolicyStatement({
+          sid: "SonarSeedObjectRead",
+          actions: ["s3:GetObject"],
+          resources: [mediaBucket.arnForObjects("seed/*")],
         }),
       ],
     });
