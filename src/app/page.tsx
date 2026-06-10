@@ -1,10 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { CHANNELS, ChannelId } from "@/lib/channels";
 import { LngLat } from "@/lib/geo";
-import { generateWaypoints, MediaKind, Waypoint } from "@/lib/waypoints";
+import { fetchWaypoints, postDrop, MediaKind, Waypoint } from "@/lib/waypoints";
 import RadarSweep from "@/components/RadarSweep";
 import TopBar from "@/components/TopBar";
 import ChannelDock from "@/components/ChannelDock";
@@ -15,15 +15,25 @@ import DropComposer from "@/components/DropComposer";
 // mapbox-gl touches window → load the map client-side only
 const RadarMap = dynamic(() => import("@/components/RadarMap"), { ssr: false });
 
-// Default to downtown Miami (us-east-1 demo region) until geolocation resolves.
-const DEFAULT_CENTER: LngLat = { lng: -80.1918, lat: 25.7617 };
-const PLACE = "Festival Grounds";
+// Default to Punta Arenas, Chile (where the live cluster is seeded) until
+// geolocation resolves.
+const DEFAULT_CENTER: LngLat = { lng: -70.9171, lat: -53.1638 };
+const PLACE = "Punta Arenas";
 
 export default function Home() {
   const [center, setCenter] = useState<LngLat>(DEFAULT_CENTER);
-  const [waypoints, setWaypoints] = useState<Waypoint[]>(() =>
-    generateWaypoints(DEFAULT_CENTER)
-  );
+  const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+
+  // Load live waypoints for the initial center from the DynamoDB-backed API.
+  useEffect(() => {
+    let active = true;
+    fetchWaypoints(DEFAULT_CENTER)
+      .then((w) => active && setWaypoints(w))
+      .catch((e) => console.error("load waypoints", e));
+    return () => {
+      active = false;
+    };
+  }, []);
   const [visible, setVisible] = useState<Set<ChannelId>>(
     () => new Set(CHANNELS.map((c) => c.id))
   );
@@ -53,7 +63,9 @@ export default function Home() {
 
   function handleUserLocation(pos: LngLat) {
     setCenter(pos);
-    setWaypoints(generateWaypoints(pos));
+    fetchWaypoints(pos)
+      .then(setWaypoints)
+      .catch((e) => console.error("load waypoints", e));
   }
 
   function toggleChannel(id: ChannelId) {
@@ -70,7 +82,8 @@ export default function Home() {
   }
 
   function drop(channel: ChannelId, kind: MediaKind, text: string) {
-    const wp: Waypoint = {
+    // Optimistic insert for instant feedback, then persist to DynamoDB.
+    const optimistic: Waypoint = {
       id: `drop_${Date.now()}`,
       channel,
       kind,
@@ -83,11 +96,20 @@ export default function Home() {
       bearing: 0,
       meters: 0,
     };
-    setWaypoints((prev) => [wp, ...prev]);
+    setWaypoints((prev) => [optimistic, ...prev]);
     setVisible((prev) => new Set(prev).add(channel));
     setComposerOpen(false);
-    setSelectedId(wp.id);
+    setSelectedId(optimistic.id);
     setRecenterSignal((s) => s + 1);
+
+    postDrop({ channel, kind, text, center })
+      .then((saved) => {
+        setWaypoints((prev) =>
+          prev.map((w) => (w.id === optimistic.id ? saved : w))
+        );
+        setSelectedId(saved.id);
+      })
+      .catch((e) => console.error("drop", e));
   }
 
   return (

@@ -82,6 +82,47 @@ export function generateWaypoints(center: LngLat, seed = 1337): Waypoint[] {
   });
 }
 
+/** Fetch live waypoints near a center from the API (DynamoDB-backed). */
+export async function fetchWaypoints(
+  center: LngLat,
+  channels?: ChannelId[],
+): Promise<Waypoint[]> {
+  const params = new URLSearchParams({
+    lat: String(center.lat),
+    lng: String(center.lng),
+  });
+  if (channels) params.set("channels", channels.join(","));
+  const res = await fetch(`/api/waypoints?${params}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`fetchWaypoints failed: ${res.status}`);
+  const data = await res.json();
+  return data.waypoints as Waypoint[];
+}
+
+/** Persist a drop at `center` and return the saved waypoint. */
+export async function postDrop(input: {
+  channel: ChannelId;
+  kind: MediaKind;
+  text: string;
+  center: LngLat;
+  author?: string;
+}): Promise<Waypoint> {
+  const res = await fetch("/api/waypoints", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      channel: input.channel,
+      kind: input.kind,
+      text: input.text,
+      lat: input.center.lat,
+      lng: input.center.lng,
+      author: input.author ?? "you",
+    }),
+  });
+  if (!res.ok) throw new Error(`postDrop failed: ${res.status}`);
+  const data = await res.json();
+  return data.waypoint as Waypoint;
+}
+
 export const MEDIA_ICON: Record<MediaKind, string> = {
   text: "✎",
   photo: "❏",

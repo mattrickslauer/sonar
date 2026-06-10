@@ -9,6 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1065.0",
+    "@aws-sdk/lib-dynamodb": "^3.1065.0",
     "mapbox-gl": "^3.24.0",
     "next": "16.2.7",
     "react": "19.2.4",
