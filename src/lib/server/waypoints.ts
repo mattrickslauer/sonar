@@ -12,7 +12,7 @@ import {
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { CHANNELS, ChannelId } from "@/lib/channels";
 import { LngLat, distance, bearing } from "@/lib/geo";
-import { Waypoint, MediaKind } from "@/lib/waypoints";
+import { Waypoint, MediaKind, mediaViewUrl } from "@/lib/waypoints";
 import { cellAndNeighbors, encodeGeohash } from "@/lib/geohash";
 
 // Use SONAR_-prefixed config, NOT the bare AWS_* names: on Vercel the functions
@@ -58,6 +58,7 @@ function toWaypoint(it: Record<string, unknown>, center: LngLat, now: number): W
   const expiresAt = it.ttl != null
     ? Number(it.ttl) * 1000
     : createdAt + TTL_SECONDS * 1000;
+  const mediaKey = typeof it.mediaKey === "string" ? it.mediaKey : undefined;
   return {
     id: String(it.id),
     channel: it.channel as ChannelId,
@@ -72,6 +73,8 @@ function toWaypoint(it: Record<string, unknown>, center: LngLat, now: number): W
     meters: distance(center, pos),
     expiresAt,
     lifespanMs: Math.max(1, expiresAt - createdAt),
+    mediaKey,
+    mediaUrl: mediaKey ? mediaViewUrl(mediaKey) : undefined,
   };
 }
 
@@ -108,6 +111,7 @@ export interface DropInput {
   lng: number;
   author?: string;
   lifespanSeconds?: number;
+  mediaKey?: string;
 }
 
 // Author-chosen lifespan bounds. Capped at 24h to keep the feed ephemeral.
@@ -144,6 +148,8 @@ export async function putWaypoint(input: DropInput): Promise<Waypoint> {
     love: 0,
     realLove: 0,
     promoted: false,
+    // Undefined is stripped by removeUndefinedValues (text drops carry no media).
+    mediaKey: input.mediaKey,
   };
   await ddb.send(new PutCommand({
     TableName: TABLE,

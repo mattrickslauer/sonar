@@ -202,8 +202,16 @@ export default function Home() {
     setSelectedId((cur) => (cur === id ? null : cur));
   }
 
-  function drop(channel: ChannelId, kind: MediaKind, text: string, lifespanSeconds: number) {
-    // Optimistic insert for instant feedback, then persist to DynamoDB.
+  function drop(
+    channel: ChannelId,
+    kind: MediaKind,
+    text: string,
+    lifespanSeconds: number,
+    mediaKey?: string,
+  ) {
+    // Optimistic insert for instant feedback, then persist to DynamoDB. The
+    // optimistic copy carries no mediaUrl yet — the saved waypoint the server
+    // returns fills it in (its presigned /api/media/view URL).
     const now = Date.now();
     const optimistic: Waypoint = {
       id: `drop_${now}`,
@@ -219,6 +227,7 @@ export default function Home() {
       meters: 0,
       expiresAt: now + lifespanSeconds * 1000,
       lifespanMs: lifespanSeconds * 1000,
+      mediaKey,
     };
     setWaypoints((prev) => [optimistic, ...prev]);
     setVisible((prev) => new Set(prev).add(channel));
@@ -226,7 +235,7 @@ export default function Home() {
     setSelectedId(optimistic.id);
     setRecenterSignal((s) => s + 1);
 
-    postDrop({ channel, kind, text, center, author: userId, lifespanSeconds })
+    postDrop({ channel, kind, text, center, author: userId, lifespanSeconds, mediaKey })
       .then((saved) => {
         setWaypoints((prev) =>
           prev.map((w) => (w.id === optimistic.id ? saved : w))

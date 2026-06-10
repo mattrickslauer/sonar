@@ -56,6 +56,9 @@ function payloadFromImage(img) {
     love: Number(img.love?.N || "0"),
     promoted: img.promoted?.BOOL === true,
     actorType: img.actorType?.S || "human",
+    // S3 object key for photo/video/voice drops; the client resolves it to a
+    // presigned URL via /api/media/view. Omitted (undefined) for text drops.
+    mediaKey: img.mediaKey?.S,
   };
 }
 
