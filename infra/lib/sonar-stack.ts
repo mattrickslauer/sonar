@@ -28,7 +28,7 @@ export class SonarStack extends cdk.Stack {
     // ---------------------------------------------------------------------
     // DynamoDB — single table `sonar`
     // ---------------------------------------------------------------------
-    const table = new dynamodb.Table(this, "Sonar", {
+    const table = new dynamodb.Table(this, "SonarTable", {
       tableName: "sonar",
       partitionKey: { name: "PK", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "SK", type: dynamodb.AttributeType.STRING },
@@ -51,9 +51,8 @@ export class SonarStack extends cdk.Stack {
     // ---------------------------------------------------------------------
     // Aurora DSQL — relational system-of-record
     // ---------------------------------------------------------------------
-    const dsqlCluster = new dsql.CfnCluster(this, "SonarDsql", {
+    const dsqlCluster = new dsql.CfnCluster(this, "SonarArchiveDsql", {
       deletionProtectionEnabled: false, // hackathon
-      tags: [{ key: "app", value: "sonar" }],
     });
 
     const region = cdk.Stack.of(this).region;
@@ -85,7 +84,7 @@ export class SonarStack extends cdk.Stack {
       });
 
     // Live fan-out: stream INSERT of a waypoint → push to channel subscribers.
-    const fanout = makeFn("Fanout", "fanout");
+    const fanout = makeFn("FanoutConsumerFn", "fanout");
     table.grantReadData(fanout); // reads CONN#<channel> to find subscribers
     fanout.addEventSource(
       new DynamoEventSource(table, {
@@ -103,7 +102,7 @@ export class SonarStack extends cdk.Stack {
 
     // Promotion: stream MODIFY where realLove crosses threshold AND human →
     // upsert into DSQL greatest_hits, and flag the source item promoted=true.
-    const promote = makeFn("Promote", "promote", { PROMOTE_THRESHOLD: "40" });
+    const promote = makeFn("PromoteConsumerFn", "promote", { PROMOTE_THRESHOLD: "40" });
     table.grantReadWriteData(promote);
     promote.addToRolePolicy(dsqlConnect);
     promote.addEventSource(
@@ -121,7 +120,7 @@ export class SonarStack extends cdk.Stack {
     );
 
     // Metering: stream INSERT of USAGE#... events → atomic rollup → DSQL.
-    const meter = makeFn("Meter", "meter");
+    const meter = makeFn("MeterConsumerFn", "meter");
     table.grantReadData(meter);
     meter.addToRolePolicy(dsqlConnect);
     meter.addEventSource(
@@ -144,9 +143,9 @@ export class SonarStack extends cdk.Stack {
     // bot waypoints. Note: EventBridge rate() min is 1 minute; for the ~45s
     // cadence in the data model the handler should self-reschedule or use a
     // Step Functions Wait loop.
-    const botTick = makeFn("BotTick", "bot-tick");
+    const botTick = makeFn("BotTickFn", "bot-tick");
     table.grantReadWriteData(botTick);
-    new events.Rule(this, "BotTickSchedule", {
+    new events.Rule(this, "BotTickScheduleRule", {
       schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
       targets: [new targets.LambdaFunction(botTick)],
     });
