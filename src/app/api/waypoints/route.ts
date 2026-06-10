@@ -17,8 +17,16 @@ export async function GET(request: Request) {
     ? (channelsParam.split(",") as ChannelId[])
     : undefined;
 
-  const waypoints = await queryNearby({ lat, lng }, channels);
-  return Response.json({ waypoints });
+  try {
+    const waypoints = await queryNearby({ lat, lng }, channels);
+    return Response.json({ waypoints });
+  } catch (err) {
+    // Surface the real cause in the host's function logs (e.g. AccessDenied /
+    // ResourceNotFound when AWS creds or region are misconfigured in prod).
+    console.error("queryNearby failed", err);
+    const name = err instanceof Error ? err.name : "Error";
+    return Response.json({ error: "waypoint query failed", name }, { status: 500 });
+  }
 }
 
 // POST /api/waypoints  { channel, kind, text, lat, lng, author? }

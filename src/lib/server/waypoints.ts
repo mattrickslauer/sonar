@@ -15,13 +15,30 @@ import { LngLat, distance, bearing } from "@/lib/geo";
 import { Waypoint, MediaKind } from "@/lib/waypoints";
 import { cellAndNeighbors, encodeGeohash } from "@/lib/geohash";
 
-const REGION = process.env.AWS_REGION ?? "us-east-1";
+// Use SONAR_-prefixed config, NOT the bare AWS_* names: on Vercel the functions
+// run on AWS Lambda, which injects its own AWS_REGION and (Vercel-account)
+// credentials, and reserves the AWS_* env names. Reading those would query the
+// wrong region/account. SONAR_AWS_* are passed explicitly; when unset (local
+// dev) we fall back to the default credential chain (~/.aws), and the region
+// falls back to AWS_REGION then us-east-1.
+const REGION =
+  process.env.SONAR_REGION ?? process.env.AWS_REGION ?? "us-east-1";
 const TABLE = process.env.SONAR_TABLE ?? "sonar";
 const TTL_SECONDS = 24 * 60 * 60;
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }), {
-  marshallOptions: { removeUndefinedValues: true },
-});
+const accessKeyId = process.env.SONAR_AWS_ACCESS_KEY_ID;
+const secretAccessKey = process.env.SONAR_AWS_SECRET_ACCESS_KEY;
+
+const ddb = DynamoDBDocumentClient.from(
+  new DynamoDBClient({
+    region: REGION,
+    // Explicit creds in hosted envs; omit to use the default chain locally.
+    ...(accessKeyId && secretAccessKey
+      ? { credentials: { accessKeyId, secretAccessKey } }
+      : {}),
+  }),
+  { marshallOptions: { removeUndefinedValues: true } },
+);
 
 const ULID32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 function ulid(now: number): string {
