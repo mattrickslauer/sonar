@@ -30,6 +30,13 @@ interface Props {
 
 const KINDS: MediaKind[] = ["text", "photo", "video", "voice"];
 
+// Verb reflects that the native picker offers capture or library by default.
+const ADD_PROMPT: Record<string, string> = {
+  photo: "Take or upload a photo",
+  video: "Record or upload a video",
+  voice: "Record or upload audio",
+};
+
 export default function DropComposer({ onDrop, onClose }: Props) {
   const [channel, setChannel] = useState<ChannelId>("social");
   const [kind, setKind] = useState<MediaKind>("text");
@@ -166,12 +173,12 @@ export default function DropComposer({ onDrop, onClose }: Props) {
             {!file ? (
               <button
                 onClick={() => fileInput.current?.click()}
-                className="flex w-full flex-col items-center justify-center gap-1 rounded-2xl border border-dashed border-white/20 bg-black/30 py-6 text-white/60"
+                className="flex w-full flex-col items-center justify-center gap-1 rounded-2xl border border-dashed border-white/20 bg-black/30 py-6 text-white/60 transition-colors hover:border-white/35"
               >
                 <span className="text-[22px]">{MEDIA_ICON[kind]}</span>
-                <span className="text-[13px]">Choose a {kind} file</span>
+                <span className="text-[13px]">{ADD_PROMPT[kind]}</span>
                 <span className="font-mono text-[10px] text-white/35">
-                  max {MEDIA_LIMITS[kind].label}
+                  uses your camera or library · max {MEDIA_LIMITS[kind].label}
                 </span>
               </button>
             ) : (
