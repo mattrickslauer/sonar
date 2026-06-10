@@ -17,6 +17,13 @@ export interface Waypoint {
   meters: number;
   expiresAt: number; // epoch ms when the waypoint is destroyed (ttl)
   lifespanMs: number; // total chosen lifespan; drives the countdown ring
+  mediaKey?: string; // S3 object key for photo/video/voice drops
+  mediaUrl?: string; // /api/media/view URL to render the blob (presigned on hit)
+}
+
+/** The /api/media/view URL that 307s to a presigned GET for this object. */
+export function mediaViewUrl(mediaKey: string): string {
+  return `/api/media/view?key=${encodeURIComponent(mediaKey)}`;
 }
 
 export const PROMOTE_THRESHOLD = 40;
@@ -128,6 +135,7 @@ export async function postDrop(input: {
   center: LngLat;
   author?: string;
   lifespanSeconds?: number;
+  mediaKey?: string;
 }): Promise<Waypoint> {
   const res = await fetch("/api/waypoints", {
     method: "POST",
@@ -140,11 +148,53 @@ export async function postDrop(input: {
       lng: input.center.lng,
       author: input.author ?? "you",
       lifespanSeconds: input.lifespanSeconds,
+      mediaKey: input.mediaKey,
     }),
   });
   if (!res.ok) throw new Error(`postDrop failed: ${res.status}`);
   const data = await res.json();
   return data.waypoint as Waypoint;
+}
+
+/**
+ * Upload a media file straight to S3 via a presigned POST, returning the object
+ * key to persist on the waypoint. The browser POSTs the file directly to S3 (it
+ * never transits our function), and S3 enforces the size/type policy minted by
+ * /api/media/upload. Throws with the server's message on rejection.
+ */
+export async function uploadMedia(
+  file: File,
+  channel: ChannelId,
+  kind: MediaKind,
+): Promise<string> {
+  const init = await fetch("/api/media/upload", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      channel,
+      kind,
+      contentType: file.type,
+      size: file.size,
+    }),
+  });
+  if (!init.ok) {
+    const data = await init.json().catch(() => null);
+    throw new Error(data?.error ?? `upload init failed: ${init.status}`);
+  }
+  const { url, fields, key } = (await init.json()) as {
+    url: string;
+    fields: Record<string, string>;
+    key: string;
+  };
+
+  // The S3 POST policy requires the form fields first, then the file last.
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.append(k, v);
+  form.append("file", file);
+
+  const put = await fetch(url, { method: "POST", body: form });
+  if (!put.ok) throw new Error(`upload failed: ${put.status}`);
+  return key;
 }
 
 /** The normalized waypoint payload the fanout consumer pushes over WebSocket. */
@@ -161,6 +211,7 @@ export interface RawWaypoint {
   love: number;
   promoted: boolean;
   actorType?: string;
+  mediaKey?: string;
 }
 
 /** A pushed RawWaypoint → the Waypoint shape, with layout relative to `center`. */
@@ -183,6 +234,8 @@ export function rawToWaypoint(raw: RawWaypoint, center: LngLat): Waypoint {
     meters: distance(center, pos),
     expiresAt,
     lifespanMs: Math.max(1, expiresAt - raw.createdAt),
+    mediaKey: raw.mediaKey,
+    mediaUrl: raw.mediaKey ? mediaViewUrl(raw.mediaKey) : undefined,
   };
 }
 

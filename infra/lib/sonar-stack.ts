@@ -72,6 +72,70 @@ export class SonarStack extends cdk.Stack {
     });
 
     // ---------------------------------------------------------------------
+    // S3 — media blobs (photo/video/voice)
+    // ---------------------------------------------------------------------
+    // Waypoint media never lives in DynamoDB (400 KB item cap). The browser
+    // uploads straight to this bucket via a presigned POST minted by
+    // /api/media/upload (size + content-type pinned in the POST policy), and
+    // reads go through a short-lived presigned GET behind /api/media/view.
+    //
+    // The bucket is fully private (no public/CDN access); presigned URLs are the
+    // only door. Lifecycle keeps it ephemeral like the waypoints themselves:
+    // objects expire after 2 days (max waypoint lifespan is 24h, with buffer),
+    // and dangling multipart uploads are aborted after 1 day.
+    //
+    // Explicit name so the env var (SONAR_MEDIA_BUCKET) and the sonar-vercel IAM
+    // policy can reference it ahead of deploy. ACCOUNT_ID keeps it globally
+    // unique. CORS allows the browser presigned POST/GET from the app origins;
+    // add preview-deploy origins here as needed.
+    const mediaBucket = new s3.Bucket(this, "SonarMediaBucket", {
+      bucketName: `sonar-media-${cdk.Aws.ACCOUNT_ID}`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(2),
+          abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
+        },
+      ],
+      cors: [
+        {
+          allowedHeaders: ["*"],
+          allowedMethods: [
+            s3.HttpMethods.GET,
+            s3.HttpMethods.HEAD,
+            s3.HttpMethods.POST,
+            s3.HttpMethods.PUT,
+          ],
+          allowedOrigins: [
+            "https://sonar-bay.vercel.app",
+            "http://localhost:3000",
+          ],
+          exposedHeaders: ["ETag"],
+          maxAge: 3600,
+        },
+      ],
+      // Hackathon: tear down cleanly. Switch to RETAIN for anything real.
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    // The Vercel functions sign uploads/reads with the external sonar-vercel IAM
+    // user (managed outside CDK — see docs/prod-deploy / the inline policy). Mint
+    // a least-privilege policy document the operator can attach to that user, so
+    // the bucket ARN is wired without hardcoding it.
+    const mediaUserPolicy = new iam.PolicyDocument({
+      statements: [
+        new iam.PolicyStatement({
+          sid: "SonarMediaObjectRW",
+          actions: ["s3:PutObject", "s3:GetObject"],
+          resources: [mediaBucket.arnForObjects("media/*")],
+        }),
+      ],
+    });
+
+    // ---------------------------------------------------------------------
     // Stream consumers (stubs — handlers in infra/lambda/*)
     // ---------------------------------------------------------------------
     const commonEnv = {
@@ -259,6 +323,15 @@ export class SonarStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, "TrailArn", { value: trail.trailArn });
     new cdk.CfnOutput(this, "TableName", { value: table.tableName });
+    new cdk.CfnOutput(this, "MediaBucketName", {
+      value: mediaBucket.bucketName,
+      description: "Set as SONAR_MEDIA_BUCKET for the media upload/view routes",
+    });
+    new cdk.CfnOutput(this, "MediaUserPolicyJson", {
+      value: cdk.Stack.of(this).toJsonString(mediaUserPolicy.toJSON()),
+      description:
+        "Least-privilege S3 policy to attach to the sonar-vercel IAM user",
+    });
     new cdk.CfnOutput(this, "TableStreamArn", { value: table.tableStreamArn ?? "" });
     new cdk.CfnOutput(this, "DsqlClusterArn", { value: dsqlCluster.attrResourceArn });
     new cdk.CfnOutput(this, "DsqlEndpoint", { value: dsqlEndpoint });

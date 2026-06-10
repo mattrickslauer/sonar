@@ -62,7 +62,29 @@ export default function WaypointSheet({ wp, loved, onLove, onClose }: Props) {
           </button>
         </div>
 
-        <p className="mt-3.5 text-[15px] leading-relaxed text-white/90">{wp.text}</p>
+        {wp.mediaUrl && wp.kind === "photo" && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={wp.mediaUrl}
+            alt={wp.text || "photo"}
+            className="mt-3.5 max-h-72 w-full rounded-2xl object-cover"
+          />
+        )}
+        {wp.mediaUrl && wp.kind === "video" && (
+          <video
+            src={wp.mediaUrl}
+            controls
+            playsInline
+            className="mt-3.5 max-h-72 w-full rounded-2xl bg-black"
+          />
+        )}
+        {wp.mediaUrl && wp.kind === "voice" && (
+          <audio src={wp.mediaUrl} controls className="mt-3.5 w-full" />
+        )}
+
+        {wp.text && (
+          <p className="mt-3.5 text-[15px] leading-relaxed text-white/90">{wp.text}</p>
+        )}
 
         {/* earned-permanence meter */}
         <div className="mt-4">
