@@ -24,15 +24,23 @@ function buildMarkerEl(wp: Waypoint, selected: boolean): HTMLElement {
   const fresh = wp.minutesAgo < 30;
   const ageOpacity = Math.max(0.4, 1 - wp.minutesAgo / 1440);
 
+  // NOTE: Mapbox fully owns this root element's positioning. It adds the
+  // `.mapboxgl-marker` class (position:absolute; top:0; left:0) and rewrites
+  // `transform` every frame to keep the marker pinned to its lng/lat — including
+  // during zoom. Do NOT set `position` here (a `position:relative` drops the
+  // element into normal flow, so Mapbox's transform offsets it from the wrong
+  // base and the marker drifts relative to the map on zoom). Likewise no
+  // `transform`/transform transition here, or it animates toward each new pixel
+  // position. The button is still the containing block for the absolute dot/star
+  // below; the selected-state scale lives on the dot.
   const el = document.createElement("button");
   el.className = "sonar-wp";
   el.style.cssText = `
     --wp-color:${ch.color};
-    position:relative;width:30px;height:30px;border:none;cursor:pointer;
+    width:30px;height:30px;border:none;cursor:pointer;
     border-radius:9999px;background:transparent;padding:0;
     opacity:${selected ? 1 : ageOpacity};
-    transform:translate(-50%,-50%) scale(${selected ? 1.25 : 1});
-    transition:transform .18s ease, opacity .2s ease;
+    transition:opacity .2s ease;
   `;
 
   const dot = document.createElement("span");
@@ -42,6 +50,8 @@ function buildMarkerEl(wp: Waypoint, selected: boolean): HTMLElement {
     background:${ch.color};
     box-shadow:0 0 0 ${selected ? 3 : 2}px rgba(5,7,10,.85),
       0 0 ${selected ? 22 : 12}px ${selected ? 6 : 2}px ${ch.color};
+    transform:scale(${selected ? 1.25 : 1});
+    transition:transform .18s ease;
     ${fresh ? "animation:wp-pulse 2.2s ease-in-out infinite;" : ""}
   `;
   dot.textContent = MEDIA_ICON[wp.kind];
