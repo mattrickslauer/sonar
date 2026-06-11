@@ -17,7 +17,6 @@ import {
   Waypoint,
 } from "@/lib/waypoints";
 import { openRadarSocket } from "@/lib/realtime";
-import RadarSweep from "@/components/RadarSweep";
 import TopBar from "@/components/TopBar";
 import ChannelDock from "@/components/ChannelDock";
 import AskBar from "@/components/AskBar";
@@ -68,6 +67,7 @@ export default function Home() {
   const [loved, setLoved] = useState<Set<string>>(() => new Set());
   const [recenterSignal, setRecenterSignal] = useState(0);
   const [composerOpen, setComposerOpen] = useState(false);
+  const [chromeVisible, setChromeVisible] = useState(true);
   const [userId, setUserId] = useState("you");
 
   // Resolve the persistent anon id once on the client.
@@ -256,14 +256,20 @@ export default function Home() {
           onSelect={(wp) => setSelectedId(wp.id)}
           onUserLocation={handleUserLocation}
           onExpire={handleExpire}
+          onMapTap={() => setChromeVisible((v) => !v)}
           recenterSignal={recenterSignal}
         />
-        <RadarSweep />
 
-        <TopBar place={PLACE} liveCount={visibleWaypoints.length} />
+        {/* Overlay chrome — tap the map to hide/show for a clean "just map" view */}
+        <div
+          className={`transition-opacity duration-300 ${
+            chromeVisible ? "opacity-100" : "pointer-events-none opacity-0"
+          }`}
+        >
+          <TopBar place={PLACE} liveCount={visibleWaypoints.length} />
 
-        {/* bottom control stack */}
-        <div className="absolute inset-x-0 bottom-0 z-30 flex flex-col gap-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
+          {/* bottom control stack */}
+          <div className="absolute inset-x-0 bottom-0 z-30 flex flex-col gap-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
           <div className="flex items-center justify-between px-4">
             <button
               onClick={() => setRecenterSignal((s) => s + 1)}
@@ -280,8 +286,9 @@ export default function Home() {
             </button>
           </div>
 
-          <ChannelDock active={visible} counts={counts} onToggle={toggleChannel} />
-          <AskBar waypoints={visibleWaypoints} place={PLACE} />
+            <ChannelDock active={visible} counts={counts} onToggle={toggleChannel} />
+            <AskBar waypoints={visibleWaypoints} place={PLACE} />
+          </div>
         </div>
 
         {selected && (

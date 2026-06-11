@@ -6,6 +6,7 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import { CHANNEL_MAP, ChannelId } from "@/lib/channels";
 import { LngLat } from "@/lib/geo";
 import { MEDIA_ICON, Waypoint } from "@/lib/waypoints";
+import { attachGroundRadar, GroundRadar } from "@/lib/groundRadar";
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
@@ -17,6 +18,7 @@ interface Props {
   onSelect: (wp: Waypoint) => void;
   onUserLocation: (pos: LngLat) => void;
   onExpire: (id: string) => void;
+  onMapTap: () => void;
   recenterSignal: number;
 }
 
@@ -120,12 +122,14 @@ export default function RadarMap({
   onSelect,
   onUserLocation,
   onExpire,
+  onMapTap,
   recenterSignal,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<Map<string, MarkerEntry>>(new Map());
   const userMarkerRef = useRef<mapboxgl.Marker | null>(null);
+  const radarRef = useRef<GroundRadar | null>(null);
   const homeRef = useRef<LngLat>(center);
 
   // Latest callbacks/selection read by the (mount-stable) marker effects.
@@ -135,6 +139,8 @@ export default function RadarMap({
   onSelectRef.current = onSelect;
   const onExpireRef = useRef(onExpire);
   onExpireRef.current = onExpire;
+  const onMapTapRef = useRef(onMapTap);
+  onMapTapRef.current = onMapTap;
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const prevSelectedRef = useRef<string | null>(null);
@@ -196,6 +202,14 @@ export default function RadarMap({
     });
     mapRef.current = map;
 
+    // Tapping empty map (not a marker — those are DOM overlays off-canvas) toggles
+    // the overlay chrome, for a clean "just the map" view.
+    map.on("click", () => onMapTapRef.current());
+
+    // Floor-projected sonar radar: rings + sweep drawn as ground GeoJSON so they
+    // tilt/rotate with the map instead of floating as a flat HUD.
+    radarRef.current = attachGroundRadar(map);
+
     const ro = new ResizeObserver(() => map.resize());
     ro.observe(containerRef.current);
 
@@ -218,6 +232,7 @@ export default function RadarMap({
           const pos = { lng: p.coords.longitude, lat: p.coords.latitude };
           homeRef.current = pos;
           userMarkerRef.current?.setLngLat([pos.lng, pos.lat]);
+          radarRef.current?.setCenter(pos.lng, pos.lat);
           map.flyTo({ center: [pos.lng, pos.lat], zoom: 15.4, duration: 1200 });
           onUserLocationRef.current(pos);
         },
@@ -228,6 +243,8 @@ export default function RadarMap({
 
     return () => {
       ro.disconnect();
+      radarRef.current?.destroy();
+      radarRef.current = null;
       map.remove();
       mapRef.current = null;
     };
@@ -238,6 +255,7 @@ export default function RadarMap({
   useEffect(() => {
     homeRef.current = center;
     userMarkerRef.current?.setLngLat([center.lng, center.lat]);
+    radarRef.current?.setCenter(center.lng, center.lat);
   }, [center]);
 
   // Reconcile waypoint markers by id (does NOT depend on selectedId, so picking
