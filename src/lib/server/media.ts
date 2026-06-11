@@ -37,10 +37,12 @@ export function mediaConfigured(): boolean {
 // Object keys are `media/<channel>/<random>.<ext>`. The channel segment is a
 // lowercase id; the random segment is 16 hex bytes. Validate on read so the
 // view route can't be coerced into signing arbitrary keys.
-const KEY_RE = /^media\/[a-z]+\/[0-9a-f]{32}\.[a-z0-9]+$/;
+const UPLOAD_KEY_RE = /^media\/[a-z]+\/[0-9a-f]{32}\.[a-z0-9]+$/;
+// Persistent bot seed media (not lifecycle-expired): seed/<kind>/<slug>.<ext>.
+const SEED_KEY_RE = /^seed\/(photo|video|voice)\/[a-z0-9][a-z0-9-]*\.[a-z0-9]+$/;
 
 export function isValidMediaKey(key: string): boolean {
-  return KEY_RE.test(key);
+  return UPLOAD_KEY_RE.test(key) || SEED_KEY_RE.test(key);
 }
 
 const UPLOAD_EXPIRY_SECONDS = 5 * 60; // browser must finish the POST within 5m

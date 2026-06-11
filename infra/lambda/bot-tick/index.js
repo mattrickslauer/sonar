@@ -107,6 +107,23 @@ const POOL = [
 
 const CHANNELS = ["events", "food", "music", "social", "safety"];
 
+// Persistent seed media in the media bucket under seed/ (never lifecycle-expired;
+// see infra/lib/sonar-stack.ts). Bot photo/video drops point at these so the
+// radar shows real blobs, resolved client-side via /api/media/view.
+const SEED_PHOTOS = [
+  "seed/photo/scene-1.jpg",
+  "seed/photo/scene-2.jpg",
+  "seed/photo/scene-3.jpg",
+  "seed/photo/scene-4.jpg",
+];
+const SEED_VIDEOS = ["seed/video/clip-1.mp4", "seed/video/clip-2.mp4"];
+
+function seedMediaKey(kind) {
+  if (kind === "photo") return SEED_PHOTOS[Math.floor(Math.random() * SEED_PHOTOS.length)];
+  if (kind === "video") return SEED_VIDEOS[Math.floor(Math.random() * SEED_VIDEOS.length)];
+  return undefined; // text/voice carry no blob
+}
+
 function buildBotItem(template, center, now) {
   // Scatter 40–900m around the cell's resident, then re-derive the cell from
   // the scattered point so the item lands in its true geohash partition.
@@ -137,6 +154,8 @@ function buildBotItem(template, center, now) {
     love: Math.floor(Math.random() * 25),
     realLove: 0, // bots never touch realLove → can never fake-promote
     promoted: false,
+    // photo/video bots get a seed blob; undefined is stripped (removeUndefinedValues).
+    mediaKey: seedMediaKey(template.kind),
   };
 }
 
