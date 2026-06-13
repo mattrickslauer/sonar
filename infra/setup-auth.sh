@@ -81,8 +81,12 @@ run_ses() {
   aws sesv2 create-email-identity --email-identity "$SES_IDENTITY" --region "$REGION" 2>/dev/null \
     && echo "    created identity ${SES_IDENTITY} — check your inbox and click the verify link" \
     || echo "    identity ${SES_IDENTITY} already exists (skipping create)"
+  # SES authorizes ses:SendEmail against BOTH the sender AND recipient identity,
+  # and against the account's default configuration set if one is applied — so
+  # scope to all identities + configuration sets in this region (NOT just the
+  # sender identity, which fails on the recipient / config-set resource).
   aws iam put-user-policy --user-name sonar-vercel --policy-name SonarSesSend \
-    --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"SonarSesSend\",\"Effect\":\"Allow\",\"Action\":\"ses:SendEmail\",\"Resource\":\"arn:aws:ses:${REGION}:${ACCOUNT_ID}:identity/${SES_IDENTITY}\"}]}"
+    --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"SonarSesSend\",\"Effect\":\"Allow\",\"Action\":[\"ses:SendEmail\",\"ses:SendRawEmail\"],\"Resource\":[\"arn:aws:ses:${REGION}:${ACCOUNT_ID}:identity/*\",\"arn:aws:ses:${REGION}:${ACCOUNT_ID}:configuration-set/*\"]}]}"
   vercel link --yes --project "$VERCEL_PROJECT" --scope "$VERCEL_SCOPE" >/dev/null
   set_env SONAR_SES_SENDER "$SES_SENDER"
   echo "    done. NOTE: SES starts in sandbox (recipients must be verified);"
