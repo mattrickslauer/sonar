@@ -110,11 +110,15 @@ export async function ensureAnonymousAccount(id: string): Promise<Account> {
   return withRetry(async () => {
     // Create the unclaimed row if absent. handle = id keeps the UNIQUE NOT NULL
     // handle satisfied without a human handle yet; display_name defaults to "you".
+    // Bind `id` to two distinct placeholders ($1 uuid, $2 text) rather than
+    // reusing $1 for both columns: DSQL deduces a single type per placeholder,
+    // and one $1 spanning a uuid and a text column fails with 42P08
+    // ("inconsistent types deduced for parameter $1").
     await query(
       `INSERT INTO accounts (id, handle, display_name)
-       VALUES ($1, $1, 'you')
+       VALUES ($1, $2, 'you')
        ON CONFLICT (id) DO NOTHING`,
-      [id],
+      [id, id],
     );
     const account = await getAccountById(id);
     if (!account) throw new Error("account row vanished after insert");
@@ -192,7 +196,11 @@ export async function claimOrSignIn(
     if (!device || device.claimedAt || device.isBot) {
       // No usable anon row (never wrote, already claimed, or a bot id) → fresh account.
       targetId = newAccountId();
-      await query(`INSERT INTO accounts (id, handle, display_name) VALUES ($1, $1, $2)`, [
+      // $1 (uuid id) and $2 (text handle) must be distinct placeholders even
+      // though both carry targetId — see ensureAnonymousAccount for why reusing
+      // one $1 across a uuid and a text column fails with 42P08.
+      await query(`INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)`, [
+        targetId,
         targetId,
         displayName,
       ]);

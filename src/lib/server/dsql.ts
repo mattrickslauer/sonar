@@ -93,9 +93,11 @@ function getPool(): Pool {
       max: Number.isFinite(MAX) && MAX > 0 ? MAX : 2,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
-      // Belt-and-braces: cap any single statement so a hung query can't pin a
-      // serverless function for its whole timeout.
-      statement_timeout: 10_000,
+      // NOTE: do NOT set `statement_timeout` here. node-postgres sends it as a
+      // server GUC in the startup packet, and Aurora DSQL rejects it ("setting
+      // configuration parameter \"statement_timeout\" not supported"), failing
+      // every connection. DSQL enforces its own per-transaction time limits;
+      // `connectionTimeoutMillis` above still bounds connect time client-side.
       application_name: "sonar-web",
     });
     // A pooled connection erroring in the background must not crash the process.

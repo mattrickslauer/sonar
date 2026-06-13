@@ -262,21 +262,36 @@ export async function loveWaypoint(input: LoveInput): Promise<LoveResult> {
 
   // Bump both counters and extend the life atomically: each human like buys the
   // drop +5 min (ADD ttl). Returns the new ttl so the client can advance the ring.
-  const res = await ddb.send(new UpdateCommand({
-    TableName: TABLE,
-    Key: { PK: pk, SK: sk },
-    UpdateExpression: "ADD love :one, realLove :one, #ttl :ext",
-    ConditionExpression: "attribute_exists(PK)",
-    ExpressionAttributeNames: { "#ttl": "ttl" },
-    ExpressionAttributeValues: { ":one": 1, ":ext": LOVE_EXTENSION_SECONDS },
-    ReturnValues: "UPDATED_NEW",
-  }));
-  return {
-    love: Number(res.Attributes?.love ?? 0),
-    realLove: Number(res.Attributes?.realLove ?? 0),
-    counted: true,
-    expiresAt: ttlToExpiresAt(res.Attributes?.ttl),
-  };
+  try {
+    const res = await ddb.send(new UpdateCommand({
+      TableName: TABLE,
+      Key: { PK: pk, SK: sk },
+      UpdateExpression: "ADD love :one, realLove :one, #ttl :ext",
+      ConditionExpression: "attribute_exists(PK)",
+      ExpressionAttributeNames: { "#ttl": "ttl" },
+      ExpressionAttributeValues: { ":one": 1, ":ext": LOVE_EXTENSION_SECONDS },
+      ReturnValues: "UPDATED_NEW",
+    }));
+    return {
+      love: Number(res.Attributes?.love ?? 0),
+      realLove: Number(res.Attributes?.realLove ?? 0),
+      counted: true,
+      expiresAt: ttlToExpiresAt(res.Attributes?.ttl),
+    };
+  } catch (err) {
+    // The waypoint expired/vanished between the client seeing it and this love
+    // landing → the counter bump's attribute_exists(PK) fails. Roll back the
+    // dedup edge we just wrote (so it isn't orphaned) and report no count,
+    // rather than 500ing. Mirrors unloveWaypoint's vanished-waypoint handling.
+    if (err instanceof ConditionalCheckFailedException) {
+      await ddb.send(new DeleteCommand({
+        TableName: TABLE,
+        Key: { PK: `WP#${input.id}`, SK: `LOVE#${input.user}` },
+      })).catch(() => {});
+      return { love: 0, realLove: 0, counted: false, expiresAt: 0 };
+    }
+    throw err;
+  }
 }
 
 /**
