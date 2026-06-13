@@ -122,7 +122,15 @@ export interface DropInput {
   text: string;
   lat: number;
   lng: number;
+  /** Display handle shown on the pin (the account's display_name, or "you"). */
   author?: string;
+  /**
+   * Durable owner identity = the canonical accounts.id. Drives the GSI1
+   * "my drops" key, so ownership survives a display-name change and an
+   * anonymous→claimed account upgrade. Falls back to `author` when absent
+   * (legacy/anon path) so the index key is never empty.
+   */
+  ownerId?: string;
   lifespanSeconds?: number;
   mediaKey?: string;
   /** A sponsored, permanent waypoint (never expires). Billed via DSQL. */
@@ -140,6 +148,9 @@ export async function putWaypoint(input: DropInput): Promise<Waypoint> {
   const now = Date.now();
   const id = ulid(now);
   const author = input.author ?? "you";
+  // Owner identity is the durable accounts.id; fall back to the display handle
+  // for the legacy/anon path so the GSI1 key is always populated.
+  const ownerId = input.ownerId ?? author;
   const gh6 = encodeGeohash(input.lat, input.lng, 6);
   const sk = `WP#${id}`;
   const lifespan = Math.min(
@@ -154,7 +165,7 @@ export async function putWaypoint(input: DropInput): Promise<Waypoint> {
   const item = {
     PK: `CH#${input.channel}#GEO#${gh6}`,
     SK: sk,
-    GSI1PK: `USER#${author}`,
+    GSI1PK: `USER#${ownerId}`,
     GSI1SK: sk,
     id,
     channel: input.channel,

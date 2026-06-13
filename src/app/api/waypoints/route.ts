@@ -2,8 +2,10 @@ import { ChannelId } from "@/lib/channels";
 import { isUploadKind } from "@/lib/media";
 import { isValidMediaKey } from "@/lib/server/media";
 import { queryNearby, putWaypoint } from "@/lib/server/waypoints";
+import { resolveIdentity, identityErrorResponse } from "@/lib/server/identity";
 
 // Hits DynamoDB on every request — never cached.
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // GET /api/waypoints?lat=&lng=&channels=food,music
@@ -69,6 +71,18 @@ export async function POST(request: Request) {
     );
   }
 
+  // Identity is authoritative: a signed-in user's drop is attributed to their
+  // account; an anonymous drop lazily creates/uses the device's account. We do
+  // NOT trust a client-supplied author — it's derived from the resolved identity.
+  let identity;
+  try {
+    identity = await resolveIdentity(request, body?.anonId);
+  } catch (err) {
+    const res = identityErrorResponse(err);
+    if (res) return res;
+    throw err;
+  }
+
   const lifespanSeconds = Number(body?.lifespanSeconds);
   const waypoint = await putWaypoint({
     channel: body.channel,
@@ -76,7 +90,8 @@ export async function POST(request: Request) {
     text,
     lat,
     lng,
-    author: body.author,
+    ownerId: identity.userId,
+    author: identity.displayName,
     lifespanSeconds: Number.isFinite(lifespanSeconds) ? lifespanSeconds : undefined,
     mediaKey: typeof mediaKey === "string" ? mediaKey : undefined,
   });

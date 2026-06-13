@@ -16,6 +16,7 @@ import {
   Waypoint,
 } from "@/lib/waypoints";
 import { openRadarSocket } from "@/lib/realtime";
+import { loadAnonId, fetchMe, logout, type Account } from "@/lib/auth";
 import { reverseGeocode } from "@/lib/geocode";
 import { DEFAULT_RANGE, RANGE_MAP, RangeMode } from "@/lib/range";
 import TopBar from "@/components/TopBar";
@@ -26,6 +27,7 @@ import WaypointSheet from "@/components/WaypointSheet";
 import ClusterSheet from "@/components/ClusterSheet";
 import DropComposer from "@/components/DropComposer";
 import LocationGate from "@/components/LocationGate";
+import ClaimSheet from "@/components/ClaimSheet";
 
 // mapbox-gl touches window → load the map client-side only
 const RadarMap = dynamic(() => import("@/components/RadarMap"), { ssr: false });
@@ -34,21 +36,6 @@ const RadarMap = dynamic(() => import("@/components/RadarMap"), { ssr: false });
 // LOVE_EXTENSION_SECONDS) — applied optimistically, then reconciled to the
 // server's authoritative expiry.
 const LOVE_EXTENSION_MS = 5 * 60 * 1000;
-
-// Stable anonymous id so loves dedup per person and presence is attributable.
-// Lives in localStorage; set after mount to avoid an SSR hydration mismatch.
-function loadUserId(): string {
-  try {
-    let id = localStorage.getItem("sonar_uid");
-    if (!id) {
-      id = "u_" + Math.random().toString(36).slice(2, 10);
-      localStorage.setItem("sonar_uid", id);
-    }
-    return id;
-  } catch {
-    return "you";
-  }
-}
 
 type LocationError = "denied" | "unavailable" | "unsupported" | null;
 
@@ -72,13 +59,21 @@ export default function Home() {
   const [recenterSignal, setRecenterSignal] = useState(0);
   const [composerOpen, setComposerOpen] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(true);
-  const [userId, setUserId] = useState("you");
+  // Anonymous account id (UUID = accounts.id) until/unless the user signs in.
+  const [userId, setUserId] = useState("");
+  // The signed-in account (null = anonymous). The session lives in an httpOnly
+  // cookie; this is just the display state.
+  const [account, setAccount] = useState<Account | null>(null);
+  const [claimOpen, setClaimOpen] = useState(false);
   // Travel-mode range: how far Sonar fetches waypoints + sizes the floor radar.
   const [range, setRange] = useState<RangeMode>(DEFAULT_RANGE);
   const radiusMeters = RANGE_MAP[range].radiusMeters;
 
-  // Resolve the persistent anon id once on the client.
-  useEffect(() => setUserId(loadUserId()), []);
+  // Resolve the persistent anon id + any existing session once on the client.
+  useEffect(() => {
+    setUserId(loadAnonId());
+    fetchMe().then(setAccount);
+  }, []);
 
   // Acquire the user's real location — required, no default. Re-runs when the
   // user taps "try again" (locateAttempt bumps). watchPosition keeps the radar
@@ -156,7 +151,7 @@ export default function Home() {
   useEffect(() => {
     if (!center) return;
     const beat = () =>
-      postPresence({ lat: center.lat, lng: center.lng, user: userId }).catch(() => {});
+      postPresence({ lat: center.lat, lng: center.lng, anonId: userId }).catch(() => {});
     beat();
     const t = setInterval(beat, 60_000);
     return () => clearInterval(t);
@@ -167,7 +162,7 @@ export default function Home() {
   // tracks checked ids so WS pushes don't re-query the whole set each time.
   const checkedLovesRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (userId === "you") return; // wait for the resolved anon id
+    if (!userId) return; // wait for the resolved anon id
     const unchecked = waypoints
       .map((w) => w.id)
       .filter((id) => !checkedLovesRef.current.has(id));
@@ -270,7 +265,7 @@ export default function Home() {
       })
     );
 
-    const args = { id, channel: wp.channel, lat: wp.pos.lat, lng: wp.pos.lng, user: userId };
+    const args = { id, channel: wp.channel, lat: wp.pos.lat, lng: wp.pos.lng, anonId: userId };
     const call = wasLoved ? postUnlove(args) : postLove(args);
     call
       .then((res) => {
@@ -320,7 +315,7 @@ export default function Home() {
       id: `drop_${now}`,
       channel,
       kind,
-      author: userId,
+      author: account?.displayName ?? "you",
       text,
       pos: center,
       minutesAgo: 0,
@@ -338,7 +333,7 @@ export default function Home() {
     setSelectedId(optimistic.id);
     setRecenterSignal((s) => s + 1);
 
-    postDrop({ channel, kind, text, center, author: userId, lifespanSeconds, mediaKey })
+    postDrop({ channel, kind, text, center, anonId: userId, lifespanSeconds, mediaKey })
       .then((saved) => {
         setWaypoints((prev) =>
           prev.map((w) => (w.id === optimistic.id ? saved : w))
@@ -394,7 +389,12 @@ export default function Home() {
             chromeVisible ? "opacity-100" : "pointer-events-none opacity-0"
           }`}
         >
-          <TopBar place={placeLabel} liveCount={visibleWaypoints.length} />
+          <TopBar
+            place={placeLabel}
+            liveCount={visibleWaypoints.length}
+            account={account}
+            onAccountClick={() => setClaimOpen(true)}
+          />
 
           {/* bottom control stack */}
           <div className="absolute inset-x-0 bottom-0 z-30 flex flex-col gap-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
@@ -443,6 +443,23 @@ export default function Home() {
 
         {composerOpen && (
           <DropComposer onDrop={drop} onClose={() => setComposerOpen(false)} />
+        )}
+
+        {claimOpen && (
+          <ClaimSheet
+            account={account}
+            anonId={userId}
+            onClose={() => setClaimOpen(false)}
+            onSignedIn={(acc) => {
+              setAccount(acc);
+              setClaimOpen(false);
+            }}
+            onSignOut={async () => {
+              await logout();
+              setAccount(null);
+              setClaimOpen(false);
+            }}
+          />
         )}
       </div>
     </main>
