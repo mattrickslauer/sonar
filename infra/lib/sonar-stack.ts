@@ -130,6 +130,7 @@ export class SonarStack extends cdk.Stack {
             s3.HttpMethods.PUT,
           ],
           allowedOrigins: [
+            "https://mysonar.zone",
             "https://sonar-bay.vercel.app",
             "http://localhost:3000",
           ],
