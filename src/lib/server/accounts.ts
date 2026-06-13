@@ -104,8 +104,15 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
  * SECURITY: rejects ids that already belong to a *claimed* account — an
  * unauthenticated caller must not be able to write as a claimed account by
  * guessing/replaying its id. Such callers must present a session instead.
+ *
+ * @param referredBy when this account was reached via a shared waypoint link
+ *   (`?r=<username>`), the sharer's username — stamped set-once for attribution
+ *   (best-effort; never blocks the write). See attachReferral.
  */
-export async function ensureAnonymousAccount(id: string): Promise<Account> {
+export async function ensureAnonymousAccount(
+  id: string,
+  referredBy?: string,
+): Promise<Account> {
   if (!isUuid(id)) throw new Error("invalid account id");
   return withRetry(async () => {
     // Create the unclaimed row if absent. handle = id keeps the UNIQUE NOT NULL
@@ -119,8 +126,31 @@ export async function ensureAnonymousAccount(id: string): Promise<Account> {
     const account = await getAccountById(id);
     if (!account) throw new Error("account row vanished after insert");
     if (account.claimedAt) throw new AccountClaimedError();
+    if (referredBy) await attachReferral(id, referredBy);
     return account;
   });
+}
+
+/**
+ * Record who referred this (still anonymous) account, set-once. Attribution is
+ * strictly best-effort: it must NEVER break the user's drop/love, so a missing
+ * `referred_by` column (cluster not yet migrated with 002_referrals.sql) or any
+ * other failure is swallowed. The `referred_by IS NULL` guard makes it idempotent
+ * — the first referral wins and later writes are cheap no-ops — and the
+ * `claimed_at IS NULL` guard avoids relabelling an already-established account.
+ */
+async function attachReferral(id: string, referrer: string): Promise<void> {
+  const clean = referrer.trim().slice(0, 64);
+  if (!clean) return;
+  try {
+    await query(
+      `UPDATE accounts SET referred_by = $2, referred_at = now()
+       WHERE id = $1 AND referred_by IS NULL AND claimed_at IS NULL`,
+      [id, clean],
+    );
+  } catch (err) {
+    console.error("attachReferral failed (non-fatal)", err);
+  }
 }
 
 export interface ClaimIdentity {

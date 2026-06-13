@@ -3,6 +3,7 @@
 // never reads or stores a token.
 
 const ANON_KEY = "sonar_uid";
+const REFERRER_KEY = "sonar_ref";
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -22,6 +23,33 @@ export function loadAnonId(): string {
     return id;
   } catch {
     return "";
+  }
+}
+
+/**
+ * Persist the referrer's username from an inbound shared link (`?r=<username>`)
+ * so it survives until the user's first write action (drop/love), where it's
+ * sent to the backend for set-once attribution. Stored once; ignored if a
+ * referrer is already remembered (the first link that brought them in wins).
+ */
+export function saveReferrer(referrer: string): void {
+  const clean = referrer.trim().slice(0, 64);
+  if (!clean) return;
+  try {
+    if (!localStorage.getItem(REFERRER_KEY)) {
+      localStorage.setItem(REFERRER_KEY, clean);
+    }
+  } catch {
+    /* storage unavailable — referral attribution is best-effort */
+  }
+}
+
+/** The remembered referrer username, or null. Sent on drop/love for attribution. */
+export function loadReferrer(): string | null {
+  try {
+    return localStorage.getItem(REFERRER_KEY);
+  } catch {
+    return null;
   }
 }
 

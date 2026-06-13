@@ -30,8 +30,13 @@ function parseTarget(
 }
 
 async function resolve(request: Request, body: Record<string, unknown> | null) {
-  // Loving is a meaningful write → lazily create/claim the anon account.
-  return resolveIdentity(request, typeof body?.anonId === "string" ? body.anonId : undefined);
+  // Loving is a meaningful write → lazily create/claim the anon account. If the
+  // caller arrived via a shared link, attribute the referral on that first row.
+  return resolveIdentity(
+    request,
+    typeof body?.anonId === "string" ? body.anonId : undefined,
+    { referredBy: typeof body?.ref === "string" ? body.ref : undefined },
+  );
 }
 
 // POST /api/love  { id, channel, lat, lng, anonId? }  — add a love

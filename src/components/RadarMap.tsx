@@ -24,6 +24,9 @@ interface Props {
   recenterSignal: number;
   /** Fetch range (metres) of the selected travel mode — sizes the radar + zoom. */
   rangeMeters: number;
+  /** Target of an out-of-range shared waypoint: draws the directional rainbow
+   *  beacon pointing from the user toward it. Null when nothing is being sought. */
+  beacon: LngLat | null;
 }
 
 // Pick a zoom so the range circle (diameter 2·range) fills most of the viewport
@@ -43,6 +46,27 @@ const RING_RED = "#ff4d4d";
 const RING_FADE = 0.15; // last 15% of life turns red
 
 type Channel = (typeof CHANNEL_MAP)[ChannelId];
+
+// Out-of-range share beacon — the "rainbow in the air". When a shared waypoint
+// link is opened from outside its range, we never reveal the pin; instead a fan
+// of concentric arcs is anchored on the user and rotated to point along the
+// great-circle bearing to the target, so they have to physically walk toward it
+// to unlock it. The arcs are drawn once in a local frame (apex on the +x axis);
+// only the group's translate+rotate is updated as the map pans/rotates/tilts.
+const BEACON_COLORS = ["#ff5d5d", "#ffa23e", "#ffd35c", "#34e3a0", "#22d3ee", "#a855f7"];
+const BEACON_SPREAD_DEG = 56; // half-width of each arc around the target direction
+function beaconArcPath(r: number): string {
+  const a = (BEACON_SPREAD_DEG * Math.PI) / 180;
+  const x1 = (r * Math.cos(-a)).toFixed(2);
+  const y1 = (r * Math.sin(-a)).toFixed(2);
+  const x2 = (r * Math.cos(a)).toFixed(2);
+  const y2 = (r * Math.sin(a)).toFixed(2);
+  return `M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`;
+}
+const BEACON_BANDS = BEACON_COLORS.map((color, i) => ({
+  color,
+  d: beaconArcPath(48 + i * 13),
+}));
 
 interface MarkerEntry {
   marker: mapboxgl.Marker;
@@ -194,9 +218,14 @@ export default function RadarMap({
   onMapTap,
   recenterSignal,
   rangeMeters,
+  beacon,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
+  const overlaySvgRef = useRef<SVGSVGElement>(null);
+  const beaconGroupRef = useRef<SVGGElement>(null);
+  const beaconRef = useRef<LngLat | null>(beacon);
+  beaconRef.current = beacon;
   const markersRef = useRef<Map<string, MarkerEntry>>(new Map());
   const clusterMarkersRef = useRef<Map<string, ClusterMarkerEntry>>(new Map());
   const userMarkerRef = useRef<mapboxgl.Marker | null>(null);
@@ -281,6 +310,31 @@ export default function RadarMap({
     };
   }
 
+  // Re-anchor the out-of-range beacon: pin its arcs to the user's screen point
+  // and rotate them toward the target. We project BOTH points through Mapbox, so
+  // the on-screen angle already accounts for the map's bearing and pitch — the
+  // apex always points where the user must walk. Reads refs only, so it can be
+  // wired to the raw 'move' event and stays stable across renders.
+  const updateBeacon = useCallback(() => {
+    const map = mapRef.current;
+    const svg = overlaySvgRef.current;
+    const g = beaconGroupRef.current;
+    if (!map || !svg || !g) return;
+    const target = beaconRef.current;
+    if (!target) {
+      svg.style.display = "none";
+      return;
+    }
+    const user = map.project([homeRef.current.lng, homeRef.current.lat]);
+    const tp = map.project([target.lng, target.lat]);
+    const angle = (Math.atan2(tp.y - user.y, tp.x - user.x) * 180) / Math.PI;
+    g.setAttribute(
+      "transform",
+      `translate(${user.x.toFixed(1)} ${user.y.toFixed(1)}) rotate(${angle.toFixed(1)})`,
+    );
+    svg.style.display = "block";
+  }, []);
+
   // init map once
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -305,6 +359,10 @@ export default function RadarMap({
     // Re-cluster as the view changes: pixel proximity (and thus what overlaps)
     // shifts with zoom, pitch, and rotation.
     map.on("move", scheduleReconcile);
+
+    // Keep the directional beacon glued to the user + pointed at its target as
+    // the camera moves. Cheap (a transform write), so it runs every move frame.
+    map.on("move", updateBeacon);
 
     // Unlock the chime's AudioContext on the first user gesture anywhere (browsers
     // start it suspended until then).
@@ -352,7 +410,14 @@ export default function RadarMap({
     homeRef.current = center;
     userMarkerRef.current?.setLngLat([center.lng, center.lat]);
     radarRef.current?.setCenter(center.lng, center.lat);
-  }, [center]);
+    // The user moved → the bearing/anchor of the beacon changes too.
+    updateBeacon();
+  }, [center, updateBeacon]);
+
+  // Show/hide + re-aim the beacon when the sought target changes.
+  useEffect(() => {
+    updateBeacon();
+  }, [beacon, updateBeacon]);
 
   // Range change (walk/bike/car): grow/shrink the floor radar and ease the zoom
   // so the new reach fills the viewport — the range is felt, not just computed.
@@ -546,5 +611,36 @@ export default function RadarMap({
     });
   }, [recenterSignal]);
 
-  return <div ref={containerRef} className="absolute inset-0 h-full w-full" />;
+  return (
+    <div className="absolute inset-0 h-full w-full">
+      <div ref={containerRef} className="absolute inset-0 h-full w-full" />
+      {/* Out-of-range share beacon overlay. Hidden by default; updateBeacon()
+          flips display + sets the group transform. No viewBox, so user units =
+          CSS pixels and line up 1:1 with map.project() coordinates. */}
+      <svg
+        ref={overlaySvgRef}
+        className="pointer-events-none absolute inset-0 h-full w-full"
+        style={{ display: "none" }}
+        aria-hidden
+      >
+        <g ref={beaconGroupRef}>
+          {BEACON_BANDS.map((band, i) => (
+            <path
+              key={band.color}
+              className="beacon-arc"
+              d={band.d}
+              stroke={band.color}
+              strokeWidth={4}
+              strokeLinecap="round"
+              fill="none"
+              style={{
+                filter: `drop-shadow(0 0 6px ${band.color})`,
+                animationDelay: `${i * 0.12}s`,
+              }}
+            />
+          ))}
+        </g>
+      </svg>
+    </div>
+  );
 }

@@ -43,6 +43,12 @@ export interface ResolveOptions {
    * use the validated anon id as an opaque userId without touching DSQL.
    */
   ensure?: boolean;
+  /**
+   * When the caller arrived via a shared waypoint link (`?r=<username>`), the
+   * sharer's username. Recorded set-once on the anon account the first time it
+   * is lazily created (drop/love); ignored on the read/hot path. Best-effort.
+   */
+  referredBy?: string;
 }
 
 /**
@@ -52,7 +58,7 @@ export interface ResolveOptions {
 export async function resolveIdentity(
   req: Request,
   anonId: string | undefined,
-  { ensure = true }: ResolveOptions = {},
+  { ensure = true, referredBy }: ResolveOptions = {},
 ): Promise<Identity> {
   const session = await readSession(req);
   if (session) {
@@ -70,7 +76,7 @@ export async function resolveIdentity(
   // Write path: lazily create the anon row, and reject ids belonging to a
   // CLAIMED account (AccountClaimedError) — acting as a claimed account
   // requires a session, not a guessable id.
-  const account = await ensureAnonymousAccount(anonId);
+  const account = await ensureAnonymousAccount(anonId, referredBy);
   return { userId: account.id, displayName: account.displayName, authed: false };
 }
 
