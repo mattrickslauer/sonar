@@ -1,0 +1,5 @@
+view tracking
+a my drops button
+create tags and lets completely open this up to infinite use with anonomyous users
+guest session by default create account if you want optional but required to create private channels.
+fix share button and make it SEO reachable

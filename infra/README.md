@@ -9,9 +9,12 @@ AWS CDK (TypeScript) for the Sonar data layer. Implements the design in
   stream, plus **GSI1** for the reverse lookups.
 - **Aurora DSQL cluster** — relational system-of-record. The schema (DDL) is in
   the data-model doc and is applied as a separate migration (not by CDK).
-- **Stream consumers** (`lambda/`): `fanout` (INSERT → push to subscribers),
-  `promote` (MODIFY → DSQL greatest_hits), `meter` (INSERT `USAGE#…` → DSQL
-  rollups). All current stubs — they log and document the real work as TODOs.
+- **Stream consumers** (`lambda/`): `fanout` (INSERT → push to subscribers) and
+  `meter` (INSERT `USAGE#…` → DSQL rollups). Current stubs — they log and document
+  the real work as TODOs. There is **no promotion consumer**: permanence is sponsored,
+  not stream-driven. (Note: **likes extend a drop's `ttl` in-place** via the love API —
+  `ADD ttl 300` per human like — and **sponsored permanent pins are created with a
+  far-future `ttl`**; neither path is a stream consumer.)
 - **Bot tick** — EventBridge rule (1 min) → `bot-tick` Lambda that tops up quiet
   cells with templated bot waypoints off the `PRESENCE` items.
 

@@ -54,7 +54,8 @@ function payloadFromImage(img) {
     createdAt: Number(img.createdAt?.N),
     ttl: Number(img.ttl?.N || "0") || undefined,
     love: Number(img.love?.N || "0"),
-    promoted: img.promoted?.BOOL === true,
+    sponsored: img.sponsored?.BOOL === true,
+    sponsor: img.sponsor?.S,
     actorType: img.actorType?.S || "human",
     // S3 object key for photo/video/voice drops; the client resolves it to a
     // presigned URL via /api/media/view. Omitted (undefined) for text drops.

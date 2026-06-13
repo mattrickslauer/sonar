@@ -12,7 +12,8 @@ export interface Waypoint {
   pos: LngLat;
   minutesAgo: number; // age since createdAt
   love: number;
-  promoted: boolean; // crossed the love threshold → "greatest hits"
+  sponsored: boolean; // a paid, permanent waypoint (never expires)
+  sponsor?: string; // sponsor/brand label, shown on sponsored waypoints
   bearing: number; // for layout only
   meters: number;
   expiresAt: number; // epoch ms when the waypoint is destroyed (ttl)
@@ -25,8 +26,6 @@ export interface Waypoint {
 export function mediaViewUrl(mediaKey: string): string {
   return `/api/media/view?key=${encodeURIComponent(mediaKey)}`;
 }
-
-export const PROMOTE_THRESHOLD = 40;
 
 // Author-selectable lifespans (capped at 24h to keep the feed ephemeral).
 export const LIFESPAN_PRESETS: { label: string; seconds: number }[] = [
@@ -102,7 +101,7 @@ export function generateWaypoints(center: LngLat, seed = 1337): Waypoint[] {
       pos: offset(center, meters, bearing),
       minutesAgo,
       love,
-      promoted: love >= PROMOTE_THRESHOLD,
+      sponsored: false, // seed/offline data carries no sponsored pins
       bearing,
       meters,
       lifespanMs,
@@ -115,12 +114,14 @@ export function generateWaypoints(center: LngLat, seed = 1337): Waypoint[] {
 export async function fetchWaypoints(
   center: LngLat,
   channels?: ChannelId[],
+  radiusMeters?: number,
 ): Promise<Waypoint[]> {
   const params = new URLSearchParams({
     lat: String(center.lat),
     lng: String(center.lng),
   });
   if (channels) params.set("channels", channels.join(","));
+  if (radiusMeters) params.set("radius", String(Math.round(radiusMeters)));
   const res = await fetch(`/api/waypoints?${params}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`fetchWaypoints failed: ${res.status}`);
   const data = await res.json();
@@ -209,7 +210,8 @@ export interface RawWaypoint {
   createdAt: number;
   ttl?: number; // epoch seconds; expiry for the countdown ring
   love: number;
-  promoted: boolean;
+  sponsored: boolean;
+  sponsor?: string;
   actorType?: string;
   mediaKey?: string;
 }
@@ -229,7 +231,8 @@ export function rawToWaypoint(raw: RawWaypoint, center: LngLat): Waypoint {
     pos,
     minutesAgo: Math.max(0, (Date.now() - raw.createdAt) / 60000),
     love: raw.love ?? 0,
-    promoted: !!raw.promoted,
+    sponsored: !!raw.sponsored,
+    sponsor: raw.sponsor,
     bearing: bearing(center, pos),
     meters: distance(center, pos),
     expiresAt,
@@ -243,6 +246,8 @@ export interface LoveResult {
   love: number;
   realLove: number;
   counted: boolean;
+  /** new expiry (epoch ms) after the like bought/refunded time; 0 if unknown. */
+  expiresAt: number;
 }
 
 export interface LoveArgs {

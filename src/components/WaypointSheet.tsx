@@ -11,14 +11,10 @@ interface Props {
   onClose: () => void;
 }
 
-const PROMOTE_THRESHOLD = 40;
-
 export default function WaypointSheet({ wp, loved, onLove, onClose }: Props) {
   const ch = CHANNEL_MAP[wp.channel];
   // wp.love is kept authoritative (optimistically adjusted on love/unlove).
   const loveCount = wp.love;
-  const pct = Math.min(100, (loveCount / PROMOTE_THRESHOLD) * 100);
-  const promoted = loveCount >= PROMOTE_THRESHOLD;
 
   const minsLeft = Math.max(0, (wp.expiresAt - Date.now()) / 60000);
   const expiresIn =
@@ -50,7 +46,8 @@ export default function WaypointSheet({ wp, loved, onLove, onClose }: Props) {
               </div>
               <p className="font-mono text-[11px] text-white/45">
                 @{wp.author} · {formatAge(wp.minutesAgo)} ·{" "}
-                {formatDistance(wp.meters)} away · expires in {expiresIn}
+                {formatDistance(wp.meters)} away ·{" "}
+                {wp.sponsored ? "permanent" : `expires in ${expiresIn}`}
               </p>
             </div>
           </div>
@@ -86,29 +83,15 @@ export default function WaypointSheet({ wp, loved, onLove, onClose }: Props) {
           <p className="mt-3.5 text-[15px] leading-relaxed text-white/90">{wp.text}</p>
         )}
 
-        {/* earned-permanence meter */}
-        <div className="mt-4">
-          <div className="mb-1.5 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em]">
-            <span className="text-white/40">
-              {promoted ? "★ archived — greatest hits" : "toward permanence"}
-            </span>
-            <span className="text-white/55">
-              {loveCount}/{PROMOTE_THRESHOLD}
+        {/* sponsored permanent waypoint badge */}
+        {wp.sponsored && (
+          <div className="mt-4 flex items-center gap-2 rounded-2xl border border-[#ffd35c]/30 bg-[#ffd35c]/10 px-3 py-2">
+            <span className="text-[13px] text-[#ffd35c]">◆</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#ffd35c]">
+              Sponsored{wp.sponsor ? ` · ${wp.sponsor}` : ""} · permanent
             </span>
           </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-white/8">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${pct}%`,
-                background: promoted
-                  ? "#ffd35c"
-                  : `linear-gradient(90deg, ${ch.color}, var(--sonar))`,
-                boxShadow: promoted ? "0 0 10px #ffb300" : `0 0 8px ${ch.color}`,
-              }}
-            />
-          </div>
-        </div>
+        )}
 
         <div className="mt-4 flex items-center gap-2.5">
           <button

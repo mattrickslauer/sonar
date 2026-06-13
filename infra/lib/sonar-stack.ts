@@ -19,11 +19,12 @@ import * as s3 from "aws-cdk-lib/aws-s3";
  *
  * See docs/data-model.md for the full design. In short:
  *  - One on-demand DynamoDB table `sonar` is the high-write ephemeral path
- *    (waypoints, presence, connections, membership, usage). 24h TTL on `ttl`,
- *    a NEW_AND_OLD_IMAGES stream drives fan-out / promotion / metering.
+ *    (waypoints, presence, connections, membership, usage). TTL on `ttl`
+ *    (24h base, +5min per like; sponsored pins use a far-future ttl), and a
+ *    NEW_AND_OLD_IMAGES stream drives fan-out / metering.
  *  - GSI1 serves the reverse lookups ("my drops", "channels I'm in").
- *  - Aurora DSQL is the relational system-of-record (greatest-hits archive,
- *    usage rollups, billing).
+ *  - Aurora DSQL is the relational system-of-record (sponsorships, usage
+ *    rollups, billing).
  *  - An EventBridge tick drives the bot liveness loop off the PRESENCE items.
  */
 export class SonarStack extends cdk.Stack {
@@ -154,7 +155,7 @@ export class SonarStack extends cdk.Stack {
     };
 
     // Shared layer carrying the DSQL connection deps (pg + IAM signer) for the
-    // promote/meter consumers. The Node 20 runtime bundles the core AWS SDK v3
+    // meter consumer. The Node 20 runtime bundles the core AWS SDK v3
     // (DynamoDB, API Gateway Management API) but not pg or the DSQL signer.
     const dsqlLayer = new lambda.LayerVersion(this, "DsqlDepsLayer", {
       code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda", "layers", "dsql")),
@@ -190,28 +191,6 @@ export class SonarStack extends cdk.Stack {
         filters: [
           lambda.FilterCriteria.filter({
             eventName: lambda.FilterRule.isEqual("INSERT"),
-          }),
-        ],
-      })
-    );
-
-    // Promotion: stream MODIFY where realLove crosses threshold AND human →
-    // upsert into DSQL greatest_hits, and flag the source item promoted=true.
-    const promote = makeFn("PromoteConsumerFn", "promote", {
-      env: { PROMOTE_THRESHOLD: "40" },
-      layers: [dsqlLayer],
-    });
-    table.grantReadWriteData(promote);
-    promote.addToRolePolicy(dsqlConnect);
-    promote.addEventSource(
-      new DynamoEventSource(table, {
-        startingPosition: lambda.StartingPosition.LATEST,
-        batchSize: 25,
-        retryAttempts: 3,
-        bisectBatchOnError: true,
-        filters: [
-          lambda.FilterCriteria.filter({
-            eventName: lambda.FilterRule.isEqual("MODIFY"),
           }),
         ],
       })

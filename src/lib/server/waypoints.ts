@@ -25,6 +25,12 @@ const REGION =
   process.env.SONAR_REGION ?? process.env.AWS_REGION ?? "us-east-1";
 const TABLE = process.env.SONAR_TABLE ?? "sonar";
 const TTL_SECONDS = 24 * 60 * 60;
+// Likes buy time: each human love extends the waypoint's ttl by this much
+// (uncapped — sustained loves keep a drop alive). Bots never reach this path.
+const LOVE_EXTENSION_SECONDS = 5 * 60;
+// Sponsored (paid) waypoints are permanent: a far-future ttl so DynamoDB TTL
+// never deletes them, and the +5min love bump stays a harmless no-op.
+const PERMANENT_TTL_SECONDS = Math.floor(new Date("2999-01-01T00:00:00Z").getTime() / 1000);
 
 const accessKeyId = process.env.SONAR_AWS_ACCESS_KEY_ID;
 const secretAccessKey = process.env.SONAR_AWS_SECRET_ACCESS_KEY;
@@ -68,7 +74,8 @@ function toWaypoint(it: Record<string, unknown>, center: LngLat, now: number): W
     pos,
     minutesAgo: Math.max(0, (now - createdAt) / 60000),
     love: Number(it.love ?? 0),
-    promoted: Boolean(it.promoted),
+    sponsored: Boolean(it.sponsored),
+    sponsor: typeof it.sponsor === "string" ? it.sponsor : undefined,
     bearing: bearing(center, pos),
     meters: distance(center, pos),
     expiresAt,
@@ -78,10 +85,15 @@ function toWaypoint(it: Record<string, unknown>, center: LngLat, now: number): W
   };
 }
 
-/** "What's near me": query the center cell + 8 neighbors per channel, merged. */
+/**
+ * "What's near me": query the center cell + 8 neighbors per channel, merged.
+ * `radiusMeters` (the travel-mode range) clips the result to a true circle;
+ * the gh6 footprint reaches ~1.8km, so anything within that can be requested.
+ */
 export async function queryNearby(
   center: LngLat,
   channels: ChannelId[] = CHANNELS.map((c) => c.id),
+  radiusMeters?: number,
 ): Promise<Waypoint[]> {
   const cells = cellAndNeighbors(center.lat, center.lng, 6);
   const now = Date.now();
@@ -100,6 +112,7 @@ export async function queryNearby(
   const items = results.flatMap((r) => r.Items ?? []);
   return items
     .map((it) => toWaypoint(it, center, now))
+    .filter((w) => radiusMeters == null || w.meters <= radiusMeters)
     .sort((a, b) => a.meters - b.meters); // proximity-ranked
 }
 
@@ -112,13 +125,17 @@ export interface DropInput {
   author?: string;
   lifespanSeconds?: number;
   mediaKey?: string;
+  /** A sponsored, permanent waypoint (never expires). Billed via DSQL. */
+  sponsored?: boolean;
+  /** Sponsor/brand label, shown on the pin. Only meaningful when sponsored. */
+  sponsor?: string;
 }
 
 // Author-chosen lifespan bounds. Capped at 24h to keep the feed ephemeral.
 const MIN_LIFESPAN_SECONDS = 15 * 60;
 const MAX_LIFESPAN_SECONDS = TTL_SECONDS; // 24h
 
-/** Persist a real (human) drop. */
+/** Persist a real (human) drop, or a sponsored permanent waypoint. */
 export async function putWaypoint(input: DropInput): Promise<Waypoint> {
   const now = Date.now();
   const id = ulid(now);
@@ -129,6 +146,11 @@ export async function putWaypoint(input: DropInput): Promise<Waypoint> {
     MAX_LIFESPAN_SECONDS,
     Math.max(MIN_LIFESPAN_SECONDS, Math.round(input.lifespanSeconds ?? TTL_SECONDS)),
   );
+  // Sponsored waypoints are permanent: a far-future ttl so they never expire
+  // and never carry an author-chosen lifespan.
+  const ttl = input.sponsored
+    ? PERMANENT_TTL_SECONDS
+    : Math.floor(now / 1000) + lifespan;
   const item = {
     PK: `CH#${input.channel}#GEO#${gh6}`,
     SK: sk,
@@ -136,7 +158,7 @@ export async function putWaypoint(input: DropInput): Promise<Waypoint> {
     GSI1SK: sk,
     id,
     channel: input.channel,
-    actorType: "human",
+    actorType: input.sponsored ? "sponsor" : "human",
     kind: input.kind,
     author,
     text: input.text,
@@ -144,11 +166,12 @@ export async function putWaypoint(input: DropInput): Promise<Waypoint> {
     lng: input.lng,
     gh9: encodeGeohash(input.lat, input.lng, 9),
     createdAt: now,
-    ttl: Math.floor(now / 1000) + lifespan,
+    ttl,
     love: 0,
     realLove: 0,
-    promoted: false,
-    // Undefined is stripped by removeUndefinedValues (text drops carry no media).
+    sponsored: Boolean(input.sponsored),
+    // Undefined is stripped by removeUndefinedValues (non-sponsored / text drops).
+    sponsor: input.sponsored ? input.sponsor : undefined,
     mediaKey: input.mediaKey,
   };
   await ddb.send(new PutCommand({
@@ -172,12 +195,21 @@ export interface LoveResult {
   realLove: number;
   /** false when this user had already loved the waypoint (no double-count). */
   counted: boolean;
+  /** new expiry (epoch ms) after the like bought/refunded time; 0 if unknown. */
+  expiresAt: number;
+}
+
+/** epoch-seconds ttl attribute → epoch-ms expiry (0 when missing). */
+function ttlToExpiresAt(ttl: unknown): number {
+  const n = Number(ttl);
+  return Number.isFinite(n) && n > 0 ? n * 1000 : 0;
 }
 
 /**
- * Record a human love: a one-per-user dedup edge plus an atomic bump of both
- * the display `love` and the promotion-driving `realLove`. The waypoint's
- * partition is rederived from its coordinates (same gh6 as on write).
+ * Record a human love: a one-per-user dedup edge plus an atomic bump of the
+ * display `love` and human-only `realLove`, and — the headline mechanic —
+ * `ADD ttl 300`, so every like buys the drop 5 more minutes of life (uncapped).
+ * The waypoint's partition is rederived from its coordinates (same gh6 as on write).
  */
 export async function loveWaypoint(input: LoveInput): Promise<LoveResult> {
   const gh6 = encodeGeohash(input.lat, input.lng, 6);
@@ -211,32 +243,36 @@ export async function loveWaypoint(input: LoveInput): Promise<LoveResult> {
         love: Number(it?.love ?? 0),
         realLove: Number(it?.realLove ?? 0),
         counted: false,
+        expiresAt: ttlToExpiresAt(it?.ttl),
       };
     }
     throw err;
   }
 
-  // Bump both counters atomically. realLove crossing the threshold is what the
-  // promote stream consumer watches.
+  // Bump both counters and extend the life atomically: each human like buys the
+  // drop +5 min (ADD ttl). Returns the new ttl so the client can advance the ring.
   const res = await ddb.send(new UpdateCommand({
     TableName: TABLE,
     Key: { PK: pk, SK: sk },
-    UpdateExpression: "ADD love :one, realLove :one",
+    UpdateExpression: "ADD love :one, realLove :one, #ttl :ext",
     ConditionExpression: "attribute_exists(PK)",
-    ExpressionAttributeValues: { ":one": 1 },
+    ExpressionAttributeNames: { "#ttl": "ttl" },
+    ExpressionAttributeValues: { ":one": 1, ":ext": LOVE_EXTENSION_SECONDS },
     ReturnValues: "UPDATED_NEW",
   }));
   return {
     love: Number(res.Attributes?.love ?? 0),
     realLove: Number(res.Attributes?.realLove ?? 0),
     counted: true,
+    expiresAt: ttlToExpiresAt(res.Attributes?.ttl),
   };
 }
 
 /**
- * Undo a love: remove this user's dedup edge and decrement both counters. The
- * inverse of loveWaypoint; idempotent (if the edge isn't there, nothing moves).
- * Promotion is one-way — already-archived greatest-hits are not un-archived.
+ * Undo a love: remove this user's dedup edge, decrement both counters, and
+ * refund the 5 minutes the like had bought (`ADD ttl -300`). The inverse of
+ * loveWaypoint; idempotent (if the edge isn't there, nothing moves). Sponsored
+ * permanent waypoints keep their far-future ttl — the -5min refund can't expire one.
  */
 export async function unloveWaypoint(input: LoveInput): Promise<LoveResult> {
   const gh6 = encodeGeohash(input.lat, input.lng, 6);
@@ -262,6 +298,7 @@ export async function unloveWaypoint(input: LoveInput): Promise<LoveResult> {
         love: Number(it?.love ?? 0),
         realLove: Number(it?.realLove ?? 0),
         counted: false,
+        expiresAt: ttlToExpiresAt(it?.ttl),
       };
     }
     throw err;
@@ -271,21 +308,23 @@ export async function unloveWaypoint(input: LoveInput): Promise<LoveResult> {
     const res = await ddb.send(new UpdateCommand({
       TableName: TABLE,
       Key: { PK: pk, SK: sk },
-      UpdateExpression: "ADD love :neg, realLove :neg",
+      UpdateExpression: "ADD love :neg, realLove :neg, #ttl :negExt",
       ConditionExpression: "attribute_exists(PK)",
-      ExpressionAttributeValues: { ":neg": -1 },
+      ExpressionAttributeNames: { "#ttl": "ttl" },
+      ExpressionAttributeValues: { ":neg": -1, ":negExt": -LOVE_EXTENSION_SECONDS },
       ReturnValues: "UPDATED_NEW",
     }));
     return {
       love: Number(res.Attributes?.love ?? 0),
       realLove: Number(res.Attributes?.realLove ?? 0),
       counted: true,
+      expiresAt: ttlToExpiresAt(res.Attributes?.ttl),
     };
   } catch (err) {
     // Waypoint vanished (expired) after we removed the edge — edge cleanup still
     // succeeded, so report success with no counters.
     if (err instanceof ConditionalCheckFailedException) {
-      return { love: 0, realLove: 0, counted: true };
+      return { love: 0, realLove: 0, counted: true, expiresAt: 0 };
     }
     throw err;
   }

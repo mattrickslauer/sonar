@@ -12,19 +12,28 @@ import {
   postUnlove,
   postPresence,
   rawToWaypoint,
-  PROMOTE_THRESHOLD,
   MediaKind,
   Waypoint,
 } from "@/lib/waypoints";
 import { openRadarSocket } from "@/lib/realtime";
+import { reverseGeocode } from "@/lib/geocode";
+import { DEFAULT_RANGE, RANGE_MAP, RangeMode } from "@/lib/range";
 import TopBar from "@/components/TopBar";
+import RangeSelector from "@/components/RangeSelector";
 import ChannelDock from "@/components/ChannelDock";
 import AskBar from "@/components/AskBar";
 import WaypointSheet from "@/components/WaypointSheet";
+import ClusterSheet from "@/components/ClusterSheet";
 import DropComposer from "@/components/DropComposer";
+import LocationGate from "@/components/LocationGate";
 
 // mapbox-gl touches window → load the map client-side only
 const RadarMap = dynamic(() => import("@/components/RadarMap"), { ssr: false });
+
+// Likes buy time: each like adds 5 min to a drop's life (mirror of the server's
+// LOVE_EXTENSION_SECONDS) — applied optimistically, then reconciled to the
+// server's authoritative expiry.
+const LOVE_EXTENSION_MS = 5 * 60 * 1000;
 
 // Stable anonymous id so loves dedup per person and presence is attributable.
 // Lives in localStorage; set after mount to avoid an SSR hydration mismatch.
@@ -41,46 +50,111 @@ function loadUserId(): string {
   }
 }
 
-// Default to Punta Arenas, Chile (where the live cluster is seeded) until
-// geolocation resolves.
-const DEFAULT_CENTER: LngLat = { lng: -70.9171, lat: -53.1638 };
-const PLACE = "Punta Arenas";
+type LocationError = "denied" | "unavailable" | "unsupported" | null;
 
 export default function Home() {
-  const [center, setCenter] = useState<LngLat>(DEFAULT_CENTER);
+  // Sonar is a map of what's around you — there is no center until the device
+  // tells us where the user actually is. Null means "not located yet" and gates
+  // the entire app behind the location prompt; we never fall back to a default.
+  const [center, setCenter] = useState<LngLat | null>(null);
+  const [place, setPlace] = useState<string>("");
+  const [locating, setLocating] = useState(true);
+  const [locationError, setLocationError] = useState<LocationError>(null);
+  const [locateAttempt, setLocateAttempt] = useState(0);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
-
-  // Load live waypoints for the initial center from the DynamoDB-backed API.
-  useEffect(() => {
-    let active = true;
-    fetchWaypoints(DEFAULT_CENTER)
-      .then((w) => active && setWaypoints(w))
-      .catch((e) => console.error("load waypoints", e));
-    return () => {
-      active = false;
-    };
-  }, []);
   const [visible, setVisible] = useState<Set<ChannelId>>(
     () => new Set(CHANNELS.map((c) => c.id))
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Ids of the waypoints under a tapped cluster; drives the scroll-through menu.
+  const [clusterIds, setClusterIds] = useState<string[] | null>(null);
   const [loved, setLoved] = useState<Set<string>>(() => new Set());
   const [recenterSignal, setRecenterSignal] = useState(0);
   const [composerOpen, setComposerOpen] = useState(false);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [userId, setUserId] = useState("you");
+  // Travel-mode range: how far Sonar fetches waypoints + sizes the floor radar.
+  const [range, setRange] = useState<RangeMode>(DEFAULT_RANGE);
+  const radiusMeters = RANGE_MAP[range].radiusMeters;
 
   // Resolve the persistent anon id once on the client.
   useEffect(() => setUserId(loadUserId()), []);
 
+  // Acquire the user's real location — required, no default. Re-runs when the
+  // user taps "try again" (locateAttempt bumps). watchPosition keeps the radar
+  // centered on the user as they move; the first fix unlocks the app.
+  const hasFixRef = useRef(false);
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setLocating(false);
+      setLocationError("unsupported");
+      return;
+    }
+    let active = true;
+    setLocating(true);
+    setLocationError(null);
+    const watchId = navigator.geolocation.watchPosition(
+      (p) => {
+        if (!active) return;
+        hasFixRef.current = true;
+        setCenter({ lng: p.coords.longitude, lat: p.coords.latitude });
+        setLocating(false);
+        setLocationError(null);
+      },
+      (err) => {
+        if (!active) return;
+        setLocating(false);
+        // Don't surface an error (or block the app) once we already have a fix —
+        // transient watch failures shouldn't kick the user back to the gate.
+        if (!hasFixRef.current) {
+          setLocationError(
+            err.code === err.PERMISSION_DENIED ? "denied" : "unavailable"
+          );
+        }
+      },
+      { enableHighAccuracy: true, timeout: 12_000, maximumAge: 30_000 }
+    );
+    return () => {
+      active = false;
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [locateAttempt]);
+
+  // Load live waypoints around the user's location once we have it, and refetch
+  // if their cell changes meaningfully or the travel-mode range changes (a wider
+  // range pulls more distant drops; a tighter one clips back to what's close).
+  useEffect(() => {
+    if (!center) return;
+    let active = true;
+    fetchWaypoints(center, undefined, radiusMeters)
+      .then((w) => active && setWaypoints(w))
+      .catch((e) => console.error("load waypoints", e));
+    return () => {
+      active = false;
+    };
+  }, [center, radiusMeters]);
+
+  // Reverse-geocode the user's location for the top-bar label (anywhere on Earth).
+  useEffect(() => {
+    if (!center) return;
+    let active = true;
+    reverseGeocode(center)
+      .then((name) => active && name && setPlace(name))
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [center]);
+
   // Keep the latest center available to the (mount-once) socket callback.
-  const centerRef = useRef(center);
+  const centerRef = useRef<LngLat | null>(center);
   useEffect(() => {
     centerRef.current = center;
   }, [center]);
 
   // Presence heartbeat → feeds the bot-tick liveness loop for this cell.
   useEffect(() => {
+    if (!center) return;
     const beat = () =>
       postPresence({ lat: center.lat, lng: center.lng, user: userId }).catch(() => {});
     beat();
@@ -115,10 +189,12 @@ export default function Home() {
   useEffect(() => {
     const channelIds = CHANNELS.map((c) => c.id);
     return openRadarSocket(channelIds, (raw) => {
+      const c = centerRef.current;
+      if (!c) return; // ignore pushes until we know where the user is
       setWaypoints((prev) =>
         prev.some((w) => w.id === raw.id)
           ? prev
-          : [rawToWaypoint(raw, centerRef.current), ...prev]
+          : [rawToWaypoint(raw, c), ...prev]
       );
     });
   }, []);
@@ -132,9 +208,12 @@ export default function Home() {
     return c;
   }, [waypoints]);
 
+  // Clip to the channel toggles *and* the travel-mode range, so the map agrees
+  // with the radar ring no matter the source (fetch, live push, optimistic drop)
+  // and reacts instantly when the range narrows — no refetch needed.
   const visibleWaypoints = useMemo(
-    () => waypoints.filter((w) => visible.has(w.channel)),
-    [waypoints, visible]
+    () => waypoints.filter((w) => visible.has(w.channel) && w.meters <= radiusMeters),
+    [waypoints, visible, radiusMeters]
   );
 
   const selected = useMemo(
@@ -142,12 +221,17 @@ export default function Home() {
     [waypoints, selectedId]
   );
 
-  function handleUserLocation(pos: LngLat) {
-    setCenter(pos);
-    fetchWaypoints(pos)
-      .then(setWaypoints)
-      .catch((e) => console.error("load waypoints", e));
-  }
+  // Live waypoint objects under the open cluster menu, kept fresh (loves/expiry)
+  // and pruned as members expire, get hidden, or fall outside the range clip.
+  // The menu render guard hides it once fewer than two members remain (at which
+  // point the survivor is an ordinary, individually-tappable pin again).
+  const clusterWaypoints = useMemo(() => {
+    if (!clusterIds) return null;
+    const byId = new Map(visibleWaypoints.map((w) => [w.id, w]));
+    return clusterIds
+      .map((id) => byId.get(id))
+      .filter((w): w is Waypoint => !!w);
+  }, [clusterIds, visibleWaypoints]);
 
   function toggleChannel(id: ChannelId) {
     setVisible((prev) => {
@@ -164,7 +248,8 @@ export default function Home() {
     const wasLoved = loved.has(id);
     const delta = wasLoved ? -1 : 1;
 
-    // Optimistic: flip loved-state + nudge the display counter immediately.
+    // Optimistic: flip loved-state, nudge the display counter, and move the
+    // expiry by ±5 min (each like buys time) so the countdown ring reacts now.
     setLoved((prev) => {
       const next = new Set(prev);
       if (wasLoved) next.delete(id);
@@ -172,20 +257,37 @@ export default function Home() {
       return next;
     });
     setWaypoints((prev) =>
-      prev.map((w) => (w.id === id ? { ...w, love: Math.max(0, w.love + delta) } : w))
+      prev.map((w) => {
+        if (w.id !== id) return w;
+        const createdAt = w.expiresAt - w.lifespanMs; // invariant across loves
+        const expiresAt = w.expiresAt + delta * LOVE_EXTENSION_MS;
+        return {
+          ...w,
+          love: Math.max(0, w.love + delta),
+          expiresAt,
+          lifespanMs: Math.max(1, expiresAt - createdAt),
+        };
+      })
     );
 
     const args = { id, channel: wp.channel, lat: wp.pos.lat, lng: wp.pos.lng, user: userId };
     const call = wasLoved ? postUnlove(args) : postLove(args);
     call
       .then((res) => {
-        // Reconcile to the server's authoritative counters.
+        // Reconcile to the server's authoritative count + expiry (the latter
+        // covers the no-op case where the like didn't actually count).
         setWaypoints((prev) =>
-          prev.map((w) =>
-            w.id === id
-              ? { ...w, love: res.love, promoted: w.promoted || res.realLove >= PROMOTE_THRESHOLD }
-              : w
-          )
+          prev.map((w) => {
+            if (w.id !== id) return w;
+            const createdAt = w.expiresAt - w.lifespanMs;
+            const expiresAt = res.expiresAt || w.expiresAt;
+            return {
+              ...w,
+              love: res.love,
+              expiresAt,
+              lifespanMs: Math.max(1, expiresAt - createdAt),
+            };
+          })
         );
       })
       .catch((e) => console.error(wasLoved ? "unlove" : "love", e));
@@ -209,6 +311,7 @@ export default function Home() {
     lifespanSeconds: number,
     mediaKey?: string,
   ) {
+    if (!center) return; // can't drop without a location
     // Optimistic insert for instant feedback, then persist to DynamoDB. The
     // optimistic copy carries no mediaUrl yet — the saved waypoint the server
     // returns fills it in (its presigned /api/media/view URL).
@@ -222,7 +325,7 @@ export default function Home() {
       pos: center,
       minutesAgo: 0,
       love: 0,
-      promoted: false,
+      sponsored: false,
       bearing: 0,
       meters: 0,
       expiresAt: now + lifespanSeconds * 1000,
@@ -245,6 +348,24 @@ export default function Home() {
       .catch((e) => console.error("drop", e));
   }
 
+  // Location is required: until we have a fix, gate the whole app behind the
+  // location prompt — never render the map with a fake center.
+  if (!center) {
+    return (
+      <main className="flex min-h-dvh w-full items-stretch justify-center bg-black sm:items-center">
+        <div className="relative h-dvh w-full max-w-md overflow-hidden bg-background sm:h-[860px] sm:max-h-[94vh] sm:rounded-[2.5rem] sm:border sm:border-white/10 sm:shadow-2xl">
+          <LocationGate
+            locating={locating}
+            error={locationError}
+            onRetry={() => setLocateAttempt((n) => n + 1)}
+          />
+        </div>
+      </main>
+    );
+  }
+
+  const placeLabel = place || "Nearby";
+
   return (
     <main className="flex min-h-dvh w-full items-stretch justify-center bg-black sm:items-center">
       <div className="relative h-dvh w-full max-w-md overflow-hidden bg-background sm:h-[860px] sm:max-h-[94vh] sm:rounded-[2.5rem] sm:border sm:border-white/10 sm:shadow-2xl">
@@ -253,11 +374,18 @@ export default function Home() {
           waypoints={visibleWaypoints}
           visibleChannels={visible}
           selectedId={selectedId}
-          onSelect={(wp) => setSelectedId(wp.id)}
-          onUserLocation={handleUserLocation}
+          onSelect={(wp) => {
+            setClusterIds(null);
+            setSelectedId(wp.id);
+          }}
+          onSelectCluster={(wps) => {
+            setSelectedId(null);
+            setClusterIds(wps.map((w) => w.id));
+          }}
           onExpire={handleExpire}
           onMapTap={() => setChromeVisible((v) => !v)}
           recenterSignal={recenterSignal}
+          rangeMeters={radiusMeters}
         />
 
         {/* Overlay chrome — tap the map to hide/show for a clean "just map" view */}
@@ -266,10 +394,12 @@ export default function Home() {
             chromeVisible ? "opacity-100" : "pointer-events-none opacity-0"
           }`}
         >
-          <TopBar place={PLACE} liveCount={visibleWaypoints.length} />
+          <TopBar place={placeLabel} liveCount={visibleWaypoints.length} />
 
           {/* bottom control stack */}
           <div className="absolute inset-x-0 bottom-0 z-30 flex flex-col gap-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">
+          <RangeSelector active={range} onChange={setRange} />
+
           <div className="flex items-center justify-between px-4">
             <button
               onClick={() => setRecenterSignal((s) => s + 1)}
@@ -287,7 +417,7 @@ export default function Home() {
           </div>
 
             <ChannelDock active={visible} counts={counts} onToggle={toggleChannel} />
-            <AskBar waypoints={visibleWaypoints} place={PLACE} />
+            <AskBar waypoints={visibleWaypoints} place={placeLabel} />
           </div>
         </div>
 
@@ -297,6 +427,17 @@ export default function Home() {
             loved={loved.has(selected.id)}
             onLove={love}
             onClose={() => setSelectedId(null)}
+          />
+        )}
+
+        {clusterWaypoints && clusterWaypoints.length > 1 && (
+          <ClusterSheet
+            waypoints={clusterWaypoints}
+            onSelect={(id) => {
+              setClusterIds(null);
+              setSelectedId(id);
+            }}
+            onClose={() => setClusterIds(null)}
           />
         )}
 

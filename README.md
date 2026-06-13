@@ -2,7 +2,7 @@
 
 **The layer where places remember.**
 
-Snapchat is all-ephemeral. Instagram is all-permanent. Sonar is the layer in between — a place has a 24-hour memory you can see, hear, and **ask**, and the crowd decides what's worth keeping forever.
+Snapchat is all-ephemeral. Instagram is all-permanent. Sonar is the layer in between — a place has a living memory you can see, hear, and **ask**. Every drop fades in 24 hours, and every like **buys it more time**. The only permanent pins are **sponsored** ones.
 
 ---
 
@@ -13,7 +13,7 @@ Open Sonar and you see a live radar of what's happening **around you right now**
 Two things make it more than a social map:
 
 1. **Ask the place** — AI summarizes and answers questions over a location's last 24 hours. *"What's the vibe at the north stage?" · "Where's the shortest food line?"*
-2. **Earned permanence** — when a waypoint gets enough love, it's **promoted** out of the ephemeral feed into permanent storage: a place's "greatest hits," browsable at that spot and on home.
+2. **Likes buy time; sponsors buy permanence** — every like adds **+5 minutes** to a waypoint's countdown (uncapped), so the crowd keeps the good stuff alive minute by minute. Nothing user-posted lasts forever. The single exception is a **sponsored permanent waypoint** — a paid pin that never expires and carries the sponsor's name. Permanence isn't earned by love; it's purchased by sponsors.
 
 ## Two flavors, one engine
 
@@ -36,7 +36,8 @@ Subscribing opens a real-time scope; new waypoints on that channel are pushed li
 - 🔒 **Public & private channels** with access control
 - ⏳ Ephemeral by default — 24-hour TTL
 - 🤖 "Ask the place" — AI summary & Q&A over a location's recent activity
-- ⭐ Crowd-curated permanence — loved waypoints become a place's archive
+- ⏱ **Likes buy time** — every like adds 5 minutes to a drop's countdown (uncapped)
+- ◆ **Sponsored permanent waypoints** — paid pins that never expire (the only permanence)
 - 💳 Usage-based billing for private channels
 - 📱 Mobile-first radar UI
 
@@ -59,31 +60,33 @@ Subscribing opens a real-time scope; new waypoints on that channel are pushed li
                                              ▼
                      ┌──────────────────────────────────────────┐
    ask the place ───►│                 DynamoDB                  │
-   Transcribe +      │  waypoints (geohash PK · 24h TTL · love)  │
+   Transcribe +      │ waypoints (geohash PK · TTL +5min/like)   │
    Bedrock (Claude)  │  channel membership · usage metering      │
                      └────────────────────┬─────────────────────┘
                                           │ Streams → Lambda
-                   ┌──────────────────────┼──────────────────────┐
-                   ▼                      ▼                       ▼
-             live fan-out          promote on love          meter rollup
-             to subscribers        (→ DSQL)                 (usage → DSQL)
-                                          │                       │
-                                          ▼                       ▼
-                            ┌────────────────────────────────────────┐
-                            │               Aurora DSQL              │
-                            │  "greatest hits" · B2B analytics ·     │
-                            │  accounts · channels · billing (SoR)   │
-                            └─────────────────┬──────────────────────┘
-                                              ▼
-                                  usage-based billing (Stripe metered)
+                          ┌───────────────┴───────────────┐
+                          ▼                               ▼
+                    live fan-out                     meter rollup
+                    to subscribers                   (usage → DSQL)
+                                                          │
+   sponsored pin (paid) ──────────────┐                  ▼
+   permanent DynamoDB item            ▼      ┌────────────────────────┐
+   + sponsorship record ───────►  Aurora DSQL │  sponsorships ·        │
+                                  (record)    │  B2B analytics ·       │
+                                              │  accounts · channels · │
+                                              │  billing (SoR)         │
+                                              └───────────┬────────────┘
+                                                          ▼
+                                  sponsorships + private-channel usage
+                                         (Stripe billing)
 ```
 
-- **DynamoDB** — high-write ephemeral path. Geohash partition keys for geo queries, TTL for automatic 24-hour expiry, atomic counters (love + metering), Streams to drive live fan-out, promotion, and billing rollups. Also holds channel membership and raw usage-metering records.
+- **DynamoDB** — high-write ephemeral path. Geohash partition keys for geo queries, TTL for expiry (24h base, **extended +5 min on every like**; **sponsored pins use a far-future TTL so they never expire**), atomic counters (love + metering), Streams to drive live fan-out and billing rollups. Also holds channel membership and raw usage-metering records. Sponsored permanent waypoints live here too, on their geo cell, so they show on the radar.
 - **API Gateway (WebSockets) + Lambda authorizer** — real-time delivery. Clients subscribe to channel scopes; the authorizer gates private channels to members. Connect / message / disconnect events are the metered units.
-- **Aurora DSQL** — serverless, scale-to-zero, Postgres-compatible relational store doing triple duty: the "greatest hits" archive, the workplace **analytics/BI** dashboard, and the **billing system-of-record** (accounts, channels, subscriptions, invoices).
+- **Aurora DSQL** — serverless, scale-to-zero, Postgres-compatible relational store doing triple duty: the **sponsorships** record (who paid for which permanent pin, and for how long), the workplace **analytics/BI** dashboard, and the **billing system-of-record** for both revenue lines (sponsorships + private-channel usage; accounts, channels, invoices).
 - **S3 + CloudFront** — all media. Presigned uploads, CDN delivery. (Media never lives in DynamoDB — 400 KB item cap.)
 - **Amazon Transcribe + Bedrock (Claude)** — voice → text → "ask the place" summary / Q&A.
-- **Stripe** — usage-based metered billing, fed by the DSQL rollups.
+- **Stripe** — billing for both lines: **sponsorships** (paid permanent pins) and **private-channel usage** (metered), fed by the DSQL records/rollups.
 
 > **No vector database.** Geofencing plus a 24-hour window bound every AI query's context small enough to answer in a single model call — the data model does the scaling.
 
@@ -95,9 +98,9 @@ Subscribing opens a real-time scope; new waypoints on that channel are pushed li
 | What's near me | Query my geohash + 8 neighbors, merge, rank by proximity + freshness |
 | Subscribe to a channel | WebSocket `subscribe`; authorizer checks membership for private channels |
 | Live update | Streams → Lambda → push to the channel's subscribers in range |
-| Auto-expire | `ttl = createdAt + 24h` (DynamoDB) |
-| Promote | `UpdateItem ADD love 1`; at threshold → Streams → Lambda copies into Aurora DSQL |
-| Browse "greatest hits" | SQL query on DSQL by place / channel / top-loved |
+| Like (buy time) | `UpdateItem ADD love 1`; human likes also `ADD ttl 300` → **+5 min of life** (uncapped) |
+| Auto-expire | `ttl = createdAt + 24h + 5 min × likes` (DynamoDB) |
+| Sponsored permanent pin | `PutItem` with `sponsored=true` + a far-future `ttl` (never expires) + sponsor label; write a `sponsorships` record in DSQL for billing |
 | Ask the place | Query the cell's last 24h → feed to Claude |
 | Meter usage | connect/message events → metering items; Streams → atomic rollup → DSQL |
 
@@ -109,9 +112,11 @@ All resources run in **`us-east-1`** (DynamoDB, Aurora DSQL, API Gateway, Lambda
 
 ## Pricing
 
-Sonar is **free to use** — public channels (the live local feed) cost nothing, which keeps the network open and dense.
+Sonar is **free to use** — public channels, the live local feed, and **likes-buy-time** all cost nothing. Anyone can keep a great drop alive just by loving it (each like = +5 minutes); the crowd curates for free. Nothing a user posts is ever permanent. Revenue comes from two lines, both recorded in Aurora DSQL (the billing system-of-record):
 
-Revenue comes from **private channels**, billed **purely on usage** — metered on the real-time resources a channel actually consumes:
+**1. Sponsored permanent waypoints.** A sponsor pays to place a **permanent pin** — a waypoint that never expires (regardless of likes) and carries the sponsor's name — on a specific place and channel. It shows on the radar like any other waypoint, marked sponsored. This is the consumer-facing permanence product: brands, venues, and organizers buy a lasting presence in a place, billed per pin / per campaign window. Permanence is a sponsorship, never an earned reward.
+
+**2. Private channels — B2B, usage-based.** Private (invite-only / organization-owned) channels are billed **purely on usage** — metered on the real-time resources a channel actually consumes:
 
 - **active connection-time** (subscriber connection-minutes), and
 - **messages delivered** (waypoints + events fanned out).
@@ -120,7 +125,7 @@ You pay only for what your channel uses — there is no flat fee or seat minimum
 
 ## Stack
 
-Next.js (v0) · Vercel · Amazon DynamoDB · Amazon Aurora DSQL · Amazon API Gateway (WebSockets) · AWS Lambda · Amazon S3 · CloudFront · Amazon Transcribe · Amazon Bedrock (Claude) · Stripe (usage-based billing)
+Next.js (v0) · Vercel · Amazon DynamoDB · Amazon Aurora DSQL · Amazon API Gateway (WebSockets) · AWS Lambda · Amazon S3 · CloudFront · Amazon Transcribe · Amazon Bedrock (Claude) · Stripe (sponsorship + usage-based billing)
 
 ## Status
 

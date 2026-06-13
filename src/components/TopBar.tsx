@@ -17,7 +17,7 @@ export default function TopBar({ place, liveCount }: Props) {
           <span className="text-[13px] font-medium text-white/85">{place}</span>
         </div>
         <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.18em] text-white/40">
-          last 24h · earned permanence
+          last 24h · likes buy time
         </p>
       </div>
 

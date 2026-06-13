@@ -143,13 +143,13 @@ def p1():
     cy0 = 250
     b.append(box(720, 250, 280, 68, "Live fan-out", ["new drop → subscribers (WS)"],
                  CYAN, PANEL2, title_size=17, sub_size=11.5))
-    b.append(box(720, 332, 280, 68, "Promote", ["loved → DSQL archive"],
+    b.append(box(720, 332, 280, 68, "Sponsored pins", ["paid · permanent (far ttl)"],
                  GREEN, PANEL2, title_size=17, sub_size=11.5))
     b.append(box(720, 414, 280, 68, "Meter", ["usage → billing"],
                  ROSE, PANEL2, title_size=17, sub_size=11.5))
     # dsql
     b.append(box(1040, 300, 175, 160, "Aurora DSQL",
-                 ["greatest hits", "analytics", "billing"], GREEN, tag="FOREVER"))
+                 ["sponsorships", "analytics", "billing"], GREEN, tag="BILLING"))
     # arrows
     b.append(arrow(250, 348, 330, 348, MUTED, label="REST", label_dy=-10))
     b.append(arrow(630, 320, 720, 283, FAINT, label="Streams", label_dy=-7))
@@ -164,7 +164,7 @@ def p1():
     b.append(arrow(560, 470, 520, 428, VIOLET, dash="4 4"))
     b.append(text(480, 568, "PRESENCE heartbeat tells bots which cells have real users", 12, FAINT, "middle"))
     return page("ARCHITECTURE", "How Sonar's data layer works",
-                "One ephemeral table keeps the live radar fast; Streams turn the crowd's love into permanence.",
+                "One ephemeral table keeps the live radar fast; likes buy a drop more time, and sponsored pins are the only permanent waypoints.",
                 "".join(b), 1)
 
 
@@ -270,50 +270,52 @@ def p4():
     b.append(arrow(bx + 135, 446, ax - 135, 446, VIOLET, sw=2.6,
                    label="bots top up to liveness target", label_color=VIOLET, label_dy=-14))
     b.append(chip(425, 584, 440, 60, "tagged actorType=bot",
-                  "24h TTL cleans them up · never billed, never promoted", VIOLET))
+                  "24h TTL cleans them up · never billed · can't buy time", VIOLET))
     return page("LIVENESS", "Bots seed the place reactively",
                 "No pre-seeded world. When a real user shows up to a quiet cell, bots fill it so the radar is never empty.",
                 "".join(b), 4)
 
 
-# ----------------------------------------------------------------------------- page 5: earned permanence
+# ----------------------------------------------------------------------------- page 5: likes buy time
 def p5():
     b = []
     # ephemeral card (left)
-    b.append(rect(110, 220, 300, 230, PANEL, STROKE, 16))
-    b.append(text(130, 256, "EPHEMERAL DROP", 12, MUTED, "start", "700", spacing=1.5))
-    b.append(text(130, 292, '"birria truck, gate C —', 16, TEXT, "start"))
-    b.append(text(130, 314, ' line is short rn"', 16, TEXT, "start"))
+    b.append(rect(110, 210, 300, 250, PANEL, STROKE, 16))
+    b.append(text(130, 246, "EPHEMERAL DROP", 12, MUTED, "start", "700", spacing=1.5))
+    b.append(text(130, 282, '"birria truck, gate C —', 16, TEXT, "start"))
+    b.append(text(130, 304, ' line is short rn"', 16, TEXT, "start"))
     # ttl clock
-    b.append(circle(180, 380, 30, stroke=ROSE, sw=3, opacity=0.8))
-    b.append(line(180, 380, 180, 360, ROSE, 3))
-    b.append(line(180, 380, 195, 388, ROSE, 3))
-    b.append(text(228, 376, "24h TTL", 15, ROSE, "start", "700"))
-    b.append(text(228, 398, "auto-expires", 12, MUTED, "start"))
-    # love meter
-    mx, my, mw = 470, 300, 250
-    b.append(text(mx, my - 14, "REALLOVE  (human only)", 12, MUTED, "start", "700", spacing=1.2))
-    b.append(rect(mx, my, mw, 22, PANEL2, STROKE, 11))
-    b.append(rect(mx, my, mw * 0.82, 22, GREEN, rx=11, opacity=0.85))
-    b.append(line(mx + mw * 0.78, my - 8, mx + mw * 0.78, my + 30, TEXT, 2, dash="3 3"))
-    b.append(text(mx + mw * 0.78, my - 14, "40", 12, TEXT, "middle", "700"))
-    b.append(text(mx, my + 48, "bot love never counts toward the threshold", 12, FAINT, "start"))
-    # arrow to permanent
-    b.append(arrow(740, 300, 860, 300, GREEN, sw=2.6, label="Streams: realLove ≥ 40", label_color=GREEN, label_dy=-13))
-    # permanent card (right)
-    b.append(rect(870, 220, 320, 230, PANEL, GREEN, 16, sw=2))
-    b.append(text(890, 256, "GREATEST HITS · DSQL", 12, GREEN, "start", "700", spacing=1.2))
-    b.append(text(890, 296, '"birria truck, gate C"', 16, TEXT, "start"))
-    b.append(circle(905, 345, 9, GREEN))
-    b.append(text(925, 350, "promoted — kept forever", 13, MUTED, "start"))
-    b.append(text(890, 400, "browsable at this spot", 13, MUTED, "start"))
-    b.append(text(890, 422, "and on home", 13, MUTED, "start"))
+    b.append(circle(180, 372, 30, stroke=ROSE, sw=3, opacity=0.8))
+    b.append(line(180, 372, 180, 352, ROSE, 3))
+    b.append(line(180, 372, 195, 380, ROSE, 3))
+    b.append(text(228, 366, "24h base TTL", 15, ROSE, "start", "700"))
+    b.append(text(228, 388, "every like +5 min", 12, MUTED, "start"))
+    # likes buy time (middle) — each like adds 5 minutes
+    mx, my = 458, 248
+    b.append(text(mx, my - 18, "LIKES BUY TIME  (human only)", 12, MUTED, "start", "700", spacing=1.2))
+    for i in range(5):
+        yy = my + i * 30
+        b.append(circle(mx + 10, yy + 6, 8, ROSE, opacity=0.85))
+        b.append(text(mx + 30, yy + 11, "+5 min", 13, TEXT, "start", "700"))
+        b.append(arrow(mx + 112, yy + 6, mx + 196, yy + 6, FAINT, sw=1.4))
+    b.append(text(mx, my + 172, "uncapped — sustained likes keep it alive", 12, FAINT, "start"))
+    b.append(text(mx, my + 192, "bot love can't buy time", 12, FAINT, "start"))
+    # arrow to the sponsored pin
+    b.append(arrow(720, 300, 858, 300, GREEN, sw=2.6, label="sponsor: permanent pin", label_color=GREEN, label_dy=-13))
+    # sponsored permanent card (right)
+    b.append(rect(870, 210, 320, 250, PANEL, GREEN, 16, sw=2))
+    b.append(text(890, 246, "SPONSORED · PERMANENT", 12, GREEN, "start", "700", spacing=1.2))
+    b.append(text(890, 286, '"◆ Acme — main stage"', 16, TEXT, "start"))
+    b.append(circle(905, 335, 9, GREEN))
+    b.append(text(925, 340, "never expires (far ttl)", 13, MUTED, "start"))
+    b.append(text(890, 392, "a paid pin on the radar", 13, MUTED, "start"))
+    b.append(text(890, 414, "billed via DSQL sponsorships", 13, MUTED, "start"))
     # fading expired copies under the left card
     for i in range(4):
-        b.append(rect(120 + i * 14, 470, 240, 18, FAINT, rx=6, opacity=0.28 - i * 0.06))
-    b.append(text(130, 512, "everything else fades at 24h", 12, FAINT, "start"))
-    return page("EARNED PERMANENCE", "Love turns ephemeral into forever",
-                "Every drop expires in 24h — unless the crowd loves it past the threshold. Then a Stream copies it to the permanent archive.",
+        b.append(rect(120 + i * 14, 478, 240, 18, FAINT, rx=6, opacity=0.28 - i * 0.06))
+    b.append(text(130, 520, "out of time → fades away", 12, FAINT, "start"))
+    return page("LIKES BUY TIME", "Likes rent time · sponsors buy permanence",
+                "Drops start at 24h; each human like adds +5 min (uncapped). Nothing user-posted lasts forever — the only permanent pins are sponsored.",
                 "".join(b), 5)
 
 

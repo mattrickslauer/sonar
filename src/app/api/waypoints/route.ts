@@ -18,9 +18,13 @@ export async function GET(request: Request) {
   const channels = channelsParam
     ? (channelsParam.split(",") as ChannelId[])
     : undefined;
+  // Optional fetch radius (metres) — the travel-mode range. Omitted = unbounded
+  // (full cell-and-neighbours footprint).
+  const radius = Number(searchParams.get("radius"));
+  const radiusMeters = Number.isFinite(radius) && radius > 0 ? radius : undefined;
 
   try {
-    const waypoints = await queryNearby({ lat, lng }, channels);
+    const waypoints = await queryNearby({ lat, lng }, channels, radiusMeters);
     return Response.json({ waypoints });
   } catch (err) {
     // Surface the real cause in the host's function logs (e.g. AccessDenied /

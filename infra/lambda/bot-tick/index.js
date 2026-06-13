@@ -10,7 +10,7 @@
  *   3. If below the liveness target, drop templated bot waypoints
  *      (actorType=bot) scattered near the cell, ttl = createdAt + 86400.
  *   4. Bot-love a couple of recent real drops (touches `love` only, never
- *      `realLove`, so it can't fake-promote).
+ *      `realLove`, so it can't buy them time or make them permanent).
  *
  * Content comes from a static template pool (mirrors SEEDS in
  * src/lib/waypoints.ts). No Bedrock call on the hot path. DynamoDB-only —
@@ -152,8 +152,8 @@ function buildBotItem(template, center, now) {
     createdAt,
     ttl: Math.floor(createdAt / 1000) + TTL_SECONDS,
     love: Math.floor(Math.random() * 25),
-    realLove: 0, // bots never touch realLove → can never fake-promote
-    promoted: false,
+    realLove: 0, // bots never touch realLove → can't buy time or earn permanence
+    sponsored: false,
     // photo/video bots get a seed blob; undefined is stripped (removeUndefinedValues).
     mediaKey: seedMediaKey(template.kind),
   };
