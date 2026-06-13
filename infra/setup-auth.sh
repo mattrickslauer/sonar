@@ -25,8 +25,8 @@ DSQL_CLUSTER_ID="${DSQL_CLUSTER_ID:-7rt2xophiyumbk2nzjkf5umwhe}"
 VERCEL_SCOPE="${VERCEL_SCOPE:-ag-farms}"
 VERCEL_PROJECT="${VERCEL_PROJECT:-sonar}"
 VERCEL_TARGET="${VERCEL_TARGET:-production}"   # production | preview | development
-SES_SENDER="${SES_SENDER:-Sonar <m@mattrickslauer.com>}"
-SES_IDENTITY="${SES_IDENTITY:-m@mattrickslauer.com}"   # the verified SES identity (email or domain)
+SES_SENDER="${SES_SENDER:-Sonar <noreply@sonar.zone>}"
+SES_IDENTITY="${SES_IDENTITY:-sonar.zone}"   # the verified SES identity (domain — lets any @sonar.zone address send)
 
 CLUSTER_ARN="arn:aws:dsql:${REGION}:${ACCOUNT_ID}:cluster/${DSQL_CLUSTER_ID}"
 export SONAR_DSQL_ENDPOINT="${DSQL_CLUSTER_ID}.dsql.${REGION}.on.aws"
@@ -106,7 +106,7 @@ cat <<EOF
 
 -- Still manual (only you can provision this) --------------------------------
 Google one-tap:   create an OAuth client (Google Cloud Console → Credentials),
-authorize your origins (https://sonar-bay.vercel.app, http://localhost:3000), then:
+authorize your origins (https://sonar.zone, https://www.sonar.zone, http://localhost:3000), then:
     vercel env add NEXT_PUBLIC_GOOGLE_CLIENT_ID $VERCEL_TARGET --scope $VERCEL_SCOPE
     # NEXT_PUBLIC_* is build-time — redeploy after setting it.
     # (Google is optional — email-OTP carries the flow without it.)

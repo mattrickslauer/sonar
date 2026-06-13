@@ -130,7 +130,9 @@ export class SonarStack extends cdk.Stack {
             s3.HttpMethods.PUT,
           ],
           allowedOrigins: [
-            "https://sonar-bay.vercel.app",
+            "https://sonar.zone",
+            "https://www.sonar.zone",
+            "https://sonar-bay.vercel.app", // legacy Vercel host (kept during cutover)
             "http://localhost:3000",
           ],
           exposedHeaders: ["ETag"],
