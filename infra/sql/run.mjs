@@ -30,17 +30,29 @@ async function connect() {
     region: REGION,
     ...(credentials ? { credentials } : {}),
   });
-  const client = new Client({
-    host: ENDPOINT,
-    port: 5432,
-    user: "admin",
-    database: "postgres",
-    password: () => signer.getDbConnectAdminAuthToken(),
-    // Verified TLS — DSQL's cert chains to an Amazon root CA in Node's store.
-    ssl: { rejectUnauthorized: true },
-  });
-  await client.connect();
-  return client;
+  // DSQL endpoints resolve to several frontend IPs; an individual one can be
+  // briefly unreachable (ETIMEDOUT), so retry the connect with backoff.
+  let lastErr;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    const client = new Client({
+      host: ENDPOINT,
+      port: 5432,
+      user: "admin",
+      database: "postgres",
+      password: () => signer.getDbConnectAdminAuthToken(),
+      // Verified TLS — DSQL's cert chains to an Amazon root CA in Node's store.
+      ssl: { rejectUnauthorized: true },
+    });
+    try {
+      await client.connect();
+      return client;
+    } catch (err) {
+      lastErr = err;
+      await client.end().catch(() => {});
+      if (attempt < 6) await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+  throw lastErr;
 }
 
 // Split a .sql file into individual statements: drop `--` line comments, then

@@ -52,5 +52,8 @@ CREATE UNIQUE INDEX ASYNC IF NOT EXISTS accounts_google_sub_uniq  ON accounts (g
 -- 4. Least-privilege grants for the app role (created in 000_app_role.sql). The
 --    web server can read accounts, create anonymous rows, and claim/update them
 --    — and nothing else. No DELETE, no DDL, no access to other tables.
-GRANT USAGE ON SCHEMA public TO sonar_app;
+--    NOTE: we do NOT `GRANT USAGE ON SCHEMA public` — DSQL treats `public` as a
+--    managed system entity and rejects it ("feature not supported on system
+--    entity"); USAGE on public is already available to roles by default, so the
+--    table grant alone is sufficient.
 GRANT SELECT, INSERT, UPDATE ON accounts TO sonar_app;
