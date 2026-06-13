@@ -321,8 +321,10 @@ export default function RadarMap({
 
     // User puck — always on top (high z-index) and never dimmed behind 3D
     // buildings (occludedOpacity:1). Waypoint markers keep the default z-index.
+    // pointer-events:none so the puck never swallows clicks on a waypoint sitting
+    // directly underneath it — the puck is purely decorative and has no handler.
     const userEl = document.createElement("div");
-    userEl.style.cssText = `position:relative;width:18px;height:18px;z-index:10;`;
+    userEl.style.cssText = `position:relative;width:18px;height:18px;z-index:10;pointer-events:none;`;
     userEl.innerHTML = `
       <span style="position:absolute;inset:0;border-radius:9999px;background:#34e3a0;
         box-shadow:0 0 0 3px rgba(5,7,10,.9),0 0 16px 4px #34e3a0;"></span>
