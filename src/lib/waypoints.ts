@@ -128,13 +128,15 @@ export async function fetchWaypoints(
   return data.waypoints as Waypoint[];
 }
 
-/** Persist a drop at `center` and return the saved waypoint. */
+/** Persist a drop at `center` and return the saved waypoint. The display author
+ *  is derived server-side from the resolved identity (session or anon account);
+ *  the client only supplies `anonId` for the unauthenticated case. */
 export async function postDrop(input: {
   channel: ChannelId;
   kind: MediaKind;
   text: string;
   center: LngLat;
-  author?: string;
+  anonId: string;
   lifespanSeconds?: number;
   mediaKey?: string;
 }): Promise<Waypoint> {
@@ -147,7 +149,7 @@ export async function postDrop(input: {
       text: input.text,
       lat: input.center.lat,
       lng: input.center.lng,
-      author: input.author ?? "you",
+      anonId: input.anonId,
       lifespanSeconds: input.lifespanSeconds,
       mediaKey: input.mediaKey,
     }),
@@ -255,7 +257,8 @@ export interface LoveArgs {
   channel: ChannelId;
   lat: number;
   lng: number;
-  user: string;
+  /** Anonymous account id; ignored server-side when a session cookie is present. */
+  anonId: string;
 }
 
 /** Persist a love and return the server's authoritative counters. */
@@ -281,12 +284,12 @@ export async function postUnlove(input: LoveArgs): Promise<LoveResult> {
 }
 
 /** Which of these waypoint ids has the user already loved? Seeds loved-state. */
-export async function fetchLoves(ids: string[], user: string): Promise<string[]> {
+export async function fetchLoves(ids: string[], anonId: string): Promise<string[]> {
   if (ids.length === 0) return [];
   const res = await fetch("/api/loves", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ids, user }),
+    body: JSON.stringify({ ids, anonId }),
   });
   if (!res.ok) throw new Error(`fetchLoves failed: ${res.status}`);
   const data = await res.json();
@@ -297,7 +300,7 @@ export async function fetchLoves(ids: string[], user: string): Promise<string[]>
 export async function postPresence(input: {
   lat: number;
   lng: number;
-  user: string;
+  anonId: string;
 }): Promise<void> {
   await fetch("/api/presence", {
     method: "POST",

@@ -72,6 +72,22 @@ export class SonarStack extends cdk.Stack {
       resources: [dsqlCluster.attrResourceArn],
     });
 
+    // The Next/Vercel server connects to DSQL as the least-privilege `sonar_app`
+    // role (NOT admin), so it only needs the non-admin `dsql:DbConnect` action.
+    // The sonar-vercel IAM user is managed outside CDK (see docs/prod-deploy);
+    // mint a policy doc the operator attaches to it, so the cluster ARN is wired
+    // without hardcoding. The Postgres role itself + the IAM↔role link are set up
+    // once via infra/sql/000_app_role.sql.
+    const dsqlUserPolicy = new iam.PolicyDocument({
+      statements: [
+        new iam.PolicyStatement({
+          sid: "SonarDsqlConnect",
+          actions: ["dsql:DbConnect"],
+          resources: [dsqlCluster.attrResourceArn],
+        }),
+      ],
+    });
+
     // ---------------------------------------------------------------------
     // S3 — media blobs (photo/video/voice)
     // ---------------------------------------------------------------------
@@ -323,7 +339,15 @@ export class SonarStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, "TableStreamArn", { value: table.tableStreamArn ?? "" });
     new cdk.CfnOutput(this, "DsqlClusterArn", { value: dsqlCluster.attrResourceArn });
-    new cdk.CfnOutput(this, "DsqlEndpoint", { value: dsqlEndpoint });
+    new cdk.CfnOutput(this, "DsqlEndpoint", {
+      value: dsqlEndpoint,
+      description: "Set as SONAR_DSQL_ENDPOINT for the Next server's account path",
+    });
+    new cdk.CfnOutput(this, "DsqlUserPolicyJson", {
+      value: cdk.Stack.of(this).toJsonString(dsqlUserPolicy.toJSON()),
+      description:
+        "Least-privilege dsql:DbConnect policy to attach to the sonar-vercel IAM user",
+    });
     new cdk.CfnOutput(this, "WsApiEndpoint", {
       value: wsStage.url,
       description: "wss:// URL for the radar client (set as NEXT_PUBLIC_WS_URL)",
