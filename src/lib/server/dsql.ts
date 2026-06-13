@@ -19,8 +19,14 @@
 //   - No secret in env: auth is the caller's IAM identity (the scoped
 //     `sonar-vercel` user via SONAR_AWS_*), the same credentials the DynamoDB
 //     path already uses.
+import { setDefaultResultOrder } from "node:dns";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { DsqlSigner } from "@aws-sdk/dsql-signer";
+
+// Prefer IPv4 for DSQL: the endpoint resolves to A + AAAA records, and on
+// networks without an IPv6 route the AAAA attempt fails with ENETUNREACH and
+// wastes time before falling back. IPv4-first avoids that.
+setDefaultResultOrder("ipv4first");
 
 // Mirror waypoints.ts: SONAR_-prefixed config, never the bare AWS_* names that
 // Vercel/Lambda reserve and inject for their own account.
@@ -100,16 +106,55 @@ function getPool(): Pool {
   return pool;
 }
 
+// Connection-level errors worth retrying: a DSQL endpoint resolves to several
+// frontend IPs and an individual one can be transiently unreachable or reset.
+const TRANSIENT_CODES = new Set([
+  "ETIMEDOUT",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "EAI_AGAIN",
+  "EPIPE",
+]);
+
+function isTransient(err: unknown): boolean {
+  const e = err as { code?: string; errors?: unknown[] };
+  if (e?.code && TRANSIENT_CODES.has(e.code)) return true;
+  // node's connect() to a multi-address host throws an AggregateError whose
+  // `errors` hold the per-IP failures.
+  if (Array.isArray(e?.errors)) return e.errors.some(isTransient);
+  return false;
+}
+
+/** Retry a unit of DB work on transient connection failures (NOT on query
+ *  errors, which would re-run side effects). Each attempt acquires a fresh
+ *  pooled connection, so a bad IP is retried against a new one. */
+async function withConnRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isTransient(err) || i === attempts - 1) throw err;
+      await new Promise((r) => setTimeout(r, 300 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 /**
  * Run a parameterized query. ALWAYS pass values via `params` ($1, $2, …) — never
  * interpolate into the SQL string — so the driver parameterizes and SQL
- * injection is structurally impossible.
+ * injection is structurally impossible. Transient connection failures are
+ * retried; query errors propagate immediately.
  */
 export async function query<T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
 ): Promise<QueryResult<T>> {
-  return getPool().query<T>(text, params as never[]);
+  return withConnRetry(() => getPool().query<T>(text, params as never[]));
 }
 
 /**
@@ -120,7 +165,7 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
 export async function withTransaction<T>(
   fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
-  const client = await getPool().connect();
+  const client = await withConnRetry(() => getPool().connect());
   try {
     await client.query("BEGIN");
     const result = await fn(client);
