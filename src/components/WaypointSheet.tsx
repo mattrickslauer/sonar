@@ -1,20 +1,51 @@
 "use client";
 
+import { useState } from "react";
 import { CHANNEL_MAP } from "@/lib/channels";
 import { formatAge, formatDistance } from "@/lib/geo";
-import { MEDIA_ICON, Waypoint } from "@/lib/waypoints";
+import { MEDIA_ICON, Waypoint, shareUrl } from "@/lib/waypoints";
 
 interface Props {
   wp: Waypoint;
   loved: boolean;
   onLove: (id: string) => void;
   onClose: () => void;
+  /** The signed-in user's name, attached to the share link as the referrer
+   *  (`?r=<username>`). Undefined when anonymous → no referral param. */
+  shareUser?: string;
 }
 
-export default function WaypointSheet({ wp, loved, onLove, onClose }: Props) {
+export default function WaypointSheet({ wp, loved, onLove, onClose, shareUser }: Props) {
   const ch = CHANNEL_MAP[wp.channel];
   // wp.love is kept authoritative (optimistically adjusted on love/unlove).
   const loveCount = wp.love;
+
+  // "copied" feedback for the clipboard fallback (when navigator.share is absent).
+  const [copied, setCopied] = useState(false);
+
+  async function share() {
+    const url = shareUrl(wp, shareUser);
+    const title = `${ch.label} on Sonar`;
+    const text = wp.text || `@${wp.author} dropped a ${wp.kind} on Sonar`;
+    // Prefer the native share sheet (mobile). A throw here means the user
+    // dismissed it — don't fall back to copy in that case.
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({ title, text, url });
+      } catch {
+        /* dismissed — nothing to do */
+      }
+      return;
+    }
+    // No native share (most desktops): copy the link and confirm.
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch (e) {
+      console.error("share", e);
+    }
+  }
 
   const minsLeft = Math.max(0, (wp.expiresAt - Date.now()) / 60000);
   const expiresIn =
@@ -108,8 +139,12 @@ export default function WaypointSheet({ wp, loved, onLove, onClose }: Props) {
             <span>{loved ? "Loved" : "Love it"}</span>
             <span className="font-mono text-[12px] opacity-60">{loveCount}</span>
           </button>
-          <button className="rounded-2xl border border-white/12 px-4 py-3 text-[14px] text-white/70">
-            Share
+          <button
+            onClick={share}
+            title="Share this waypoint"
+            className="rounded-2xl border border-white/12 px-4 py-3 text-[14px] text-white/70 transition-colors"
+          >
+            {copied ? "Copied ✓" : "Share"}
           </button>
         </div>
       </div>

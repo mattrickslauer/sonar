@@ -76,7 +76,9 @@ export async function POST(request: Request) {
   // NOT trust a client-supplied author — it's derived from the resolved identity.
   let identity;
   try {
-    identity = await resolveIdentity(request, body?.anonId);
+    identity = await resolveIdentity(request, body?.anonId, {
+      referredBy: typeof body?.ref === "string" ? body.ref : undefined,
+    });
   } catch (err) {
     const res = identityErrorResponse(err);
     if (res) return res;

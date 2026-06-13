@@ -93,6 +93,24 @@ body {
   animation: sheet-up 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* Out-of-range share beacon: the rainbow arcs breathe outward toward the
+   target so it reads as "energy pointing the way you must walk". */
+@keyframes beacon-breathe {
+  0%,
+  100% {
+    transform: translateX(0);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translateX(10px);
+    opacity: 1;
+  }
+}
+.beacon-arc {
+  transform-box: fill-box;
+  animation: beacon-breathe 2.4s ease-in-out infinite;
+}
+
 /* Mapbox dark tweaks */
 .mapboxgl-ctrl-logo,
 .mapboxgl-ctrl-bottom-right,

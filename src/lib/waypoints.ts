@@ -27,6 +27,42 @@ export function mediaViewUrl(mediaKey: string): string {
   return `/api/media/view?key=${encodeURIComponent(mediaKey)}`;
 }
 
+/** Query param the share link carries to deep-link straight to a waypoint. */
+export const SHARE_WAYPOINT_PARAM = "wp";
+/** Query param that attributes a visit to the sharer (the referrer's username). */
+export const SHARE_REFERRER_PARAM = "r";
+/** Target location `lat,lng` — lets the recipient draw the out-of-range beacon
+ *  without a DB lookup (the geohash-keyed table can't fetch by id alone). */
+export const SHARE_POS_PARAM = "ll";
+/** The waypoint's channel, so the beacon can take on its colour. */
+export const SHARE_CHANNEL_PARAM = "c";
+
+/**
+ * Build an absolute share link for a waypoint. The link:
+ *  - deep-links back to the waypoint (`?wp=<id>`),
+ *  - carries the target location (`&ll=<lat>,<lng>`) and channel (`&c=<id>`) so
+ *    a recipient who is out of range can be shown a directional beacon to walk
+ *    toward — without revealing the pin until they physically arrive,
+ *  - and, when the sharer is signed in, their username as a referral/tracking
+ *    parameter (`&r=<username>`).
+ * `origin` defaults to the current page origin in the browser.
+ */
+export function shareUrl(
+  wp: Waypoint,
+  referrer?: string,
+  origin?: string,
+): string {
+  const base =
+    origin ?? (typeof window !== "undefined" ? window.location.origin : "");
+  const params = new URLSearchParams({
+    [SHARE_WAYPOINT_PARAM]: wp.id,
+    [SHARE_POS_PARAM]: `${wp.pos.lat.toFixed(6)},${wp.pos.lng.toFixed(6)}`,
+    [SHARE_CHANNEL_PARAM]: wp.channel,
+  });
+  if (referrer) params.set(SHARE_REFERRER_PARAM, referrer);
+  return `${base}/?${params}`;
+}
+
 // Author-selectable lifespans (capped at 24h to keep the feed ephemeral).
 export const LIFESPAN_PRESETS: { label: string; seconds: number }[] = [
   { label: "15m", seconds: 15 * 60 },
@@ -139,6 +175,8 @@ export async function postDrop(input: {
   anonId: string;
   lifespanSeconds?: number;
   mediaKey?: string;
+  /** Referrer username from an inbound shared link — for set-once attribution. */
+  ref?: string;
 }): Promise<Waypoint> {
   const res = await fetch("/api/waypoints", {
     method: "POST",
@@ -152,6 +190,7 @@ export async function postDrop(input: {
       anonId: input.anonId,
       lifespanSeconds: input.lifespanSeconds,
       mediaKey: input.mediaKey,
+      ref: input.ref,
     }),
   });
   if (!res.ok) throw new Error(`postDrop failed: ${res.status}`);
@@ -259,6 +298,8 @@ export interface LoveArgs {
   lng: number;
   /** Anonymous account id; ignored server-side when a session cookie is present. */
   anonId: string;
+  /** Referrer username from an inbound shared link — for set-once attribution. */
+  ref?: string;
 }
 
 /** Persist a love and return the server's authoritative counters. */

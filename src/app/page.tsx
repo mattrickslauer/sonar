@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { CHANNELS, ChannelId } from "@/lib/channels";
-import { LngLat } from "@/lib/geo";
+import { CHANNELS, CHANNEL_MAP, ChannelId } from "@/lib/channels";
+import { LngLat, distance, formatDistance } from "@/lib/geo";
 import {
   fetchWaypoints,
   fetchLoves,
@@ -14,9 +14,20 @@ import {
   rawToWaypoint,
   MediaKind,
   Waypoint,
+  SHARE_WAYPOINT_PARAM,
+  SHARE_REFERRER_PARAM,
+  SHARE_POS_PARAM,
+  SHARE_CHANNEL_PARAM,
 } from "@/lib/waypoints";
 import { openRadarSocket } from "@/lib/realtime";
-import { loadAnonId, fetchMe, logout, type Account } from "@/lib/auth";
+import {
+  loadAnonId,
+  fetchMe,
+  logout,
+  saveReferrer,
+  loadReferrer,
+  type Account,
+} from "@/lib/auth";
 import { reverseGeocode } from "@/lib/geocode";
 import { DEFAULT_RANGE, RANGE_MAP, RangeMode } from "@/lib/range";
 import TopBar from "@/components/TopBar";
@@ -68,12 +79,77 @@ export default function Home() {
   // Travel-mode range: how far Sonar fetches waypoints + sizes the floor radar.
   const [range, setRange] = useState<RangeMode>(DEFAULT_RANGE);
   const radiusMeters = RANGE_MAP[range].radiusMeters;
+  // A shared waypoint the recipient is being guided to from out of range. While
+  // set, the map shows a directional rainbow beacon instead of the pin; once the
+  // user physically walks within range it's consumed (the sheet reveals). The
+  // referrer is the username from the share link, shown in the guidance banner.
+  const [shareTarget, setShareTarget] = useState<{
+    id: string;
+    pos: LngLat;
+    channel: ChannelId;
+  } | null>(null);
+  const [referrer, setReferrer] = useState<string | null>(null);
 
   // Resolve the persistent anon id + any existing session once on the client.
   useEffect(() => {
     setUserId(loadAnonId());
     fetchMe().then(setAccount);
   }, []);
+
+  // Honor an inbound share link. The link carries the waypoint id, its location
+  // (`ll=lat,lng`) and channel (`c`), plus the referrer (`r`). We set it as the
+  // "share target": until the user is in range it shows as a directional beacon
+  // (handled below); once in range the waypoint loads and its sheet opens. The
+  // referrer is remembered for set-once backend attribution on first drop/love.
+  // Params are stripped from the URL so a refresh stays clean.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const wp = params.get(SHARE_WAYPOINT_PARAM);
+    const ref = params.get(SHARE_REFERRER_PARAM);
+    const ll = params.get(SHARE_POS_PARAM);
+    const c = params.get(SHARE_CHANNEL_PARAM);
+
+    if (ref) {
+      saveReferrer(ref);
+      setReferrer(ref);
+    }
+    if (wp) {
+      const [latS, lngS] = (ll ?? "").split(",");
+      const lat = Number(latS);
+      const lng = Number(lngS);
+      const channel = (c && c in CHANNEL_MAP ? c : "social") as ChannelId;
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        // Located link → guide the user to it (beacon until in range).
+        setShareTarget({ id: wp, pos: { lat, lng }, channel });
+      } else {
+        // Legacy/location-less link → best-effort: open it if it loads nearby.
+        setSelectedId(wp);
+      }
+    }
+
+    if (wp || ref || ll || c) {
+      [SHARE_WAYPOINT_PARAM, SHARE_REFERRER_PARAM, SHARE_POS_PARAM, SHARE_CHANNEL_PARAM].forEach(
+        (p) => params.delete(p),
+      );
+      const qs = params.toString();
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + (qs ? `?${qs}` : "")
+      );
+    }
+  }, []);
+
+  // Consume the share target once the user is physically within range of it:
+  // reveal the waypoint (its sheet opens when the nearby fetch includes it) and
+  // drop the beacon. Re-evaluated as the user moves (center) or widens range.
+  useEffect(() => {
+    if (!shareTarget || !center) return;
+    if (distance(center, shareTarget.pos) <= radiusMeters) {
+      setSelectedId(shareTarget.id);
+      setShareTarget(null);
+    }
+  }, [shareTarget, center, radiusMeters]);
 
   // Acquire the user's real location — required, no default. Re-runs when the
   // user taps "try again" (locateAttempt bumps). watchPosition keeps the radar
@@ -265,7 +341,14 @@ export default function Home() {
       })
     );
 
-    const args = { id, channel: wp.channel, lat: wp.pos.lat, lng: wp.pos.lng, anonId: userId };
+    const args = {
+      id,
+      channel: wp.channel,
+      lat: wp.pos.lat,
+      lng: wp.pos.lng,
+      anonId: userId,
+      ref: loadReferrer() ?? undefined,
+    };
     const call = wasLoved ? postUnlove(args) : postLove(args);
     call
       .then((res) => {
@@ -333,7 +416,16 @@ export default function Home() {
     setSelectedId(optimistic.id);
     setRecenterSignal((s) => s + 1);
 
-    postDrop({ channel, kind, text, center, anonId: userId, lifespanSeconds, mediaKey })
+    postDrop({
+      channel,
+      kind,
+      text,
+      center,
+      anonId: userId,
+      lifespanSeconds,
+      mediaKey,
+      ref: loadReferrer() ?? undefined,
+    })
       .then((saved) => {
         setWaypoints((prev) =>
           prev.map((w) => (w.id === optimistic.id ? saved : w))
@@ -381,6 +473,7 @@ export default function Home() {
           onMapTap={() => setChromeVisible((v) => !v)}
           recenterSignal={recenterSignal}
           rangeMeters={radiusMeters}
+          beacon={shareTarget ? shareTarget.pos : null}
         />
 
         {/* Overlay chrome — tap the map to hide/show for a clean "just map" view */}
@@ -421,12 +514,34 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Out-of-range share guidance — stays visible through the chrome toggle
+            because it's how the recipient knows what they're walking toward. */}
+        {shareTarget && (
+          <div className="pointer-events-none absolute inset-x-0 top-[5.5rem] z-40 flex justify-center px-4">
+            <div className="pointer-events-auto flex max-w-[20rem] items-center gap-3 rounded-2xl border border-white/12 bg-[#0a0e12]/90 px-4 py-2.5 backdrop-blur-xl">
+              <span className="animate-pulse text-[20px]">🌈</span>
+              <div className="min-w-0">
+                <p className="text-[13px] font-semibold text-white/90">
+                  {referrer ? `@${referrer} shared a waypoint` : "A waypoint was shared with you"}
+                </p>
+                <p
+                  className="font-mono text-[11px]"
+                  style={{ color: CHANNEL_MAP[shareTarget.channel].color }}
+                >
+                  {formatDistance(distance(center, shareTarget.pos))} away · follow the rainbow to unlock
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {selected && (
           <WaypointSheet
             wp={selected}
             loved={loved.has(selected.id)}
             onLove={love}
             onClose={() => setSelectedId(null)}
+            shareUser={account?.displayName}
           />
         )}
 
