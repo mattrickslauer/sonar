@@ -25,8 +25,8 @@ DSQL_CLUSTER_ID="${DSQL_CLUSTER_ID:-7rt2xophiyumbk2nzjkf5umwhe}"
 VERCEL_SCOPE="${VERCEL_SCOPE:-ag-farms}"
 VERCEL_PROJECT="${VERCEL_PROJECT:-sonar}"
 VERCEL_TARGET="${VERCEL_TARGET:-production}"   # production | preview | development
-SES_SENDER="${SES_SENDER:-Sonar <m@mattrickslauer.com>}"
-SES_IDENTITY="${SES_IDENTITY:-m@mattrickslauer.com}"   # the verified SES identity (email or domain)
+SES_SENDER="${SES_SENDER:-Sonar <noreply@mysonar.zone>}"
+SES_IDENTITY="${SES_IDENTITY:-mysonar.zone}"   # the verified SES identity (domain — lets any @mysonar.zone address send)
 
 CLUSTER_ARN="arn:aws:dsql:${REGION}:${ACCOUNT_ID}:cluster/${DSQL_CLUSTER_ID}"
 export SONAR_DSQL_ENDPOINT="${DSQL_CLUSTER_ID}.dsql.${REGION}.on.aws"
@@ -81,8 +81,12 @@ run_ses() {
   aws sesv2 create-email-identity --email-identity "$SES_IDENTITY" --region "$REGION" 2>/dev/null \
     && echo "    created identity ${SES_IDENTITY} — check your inbox and click the verify link" \
     || echo "    identity ${SES_IDENTITY} already exists (skipping create)"
+  # SES authorizes ses:SendEmail against BOTH the sender AND recipient identity,
+  # and against the account's default configuration set if one is applied — so
+  # scope to all identities + configuration sets in this region (NOT just the
+  # sender identity, which fails on the recipient / config-set resource).
   aws iam put-user-policy --user-name sonar-vercel --policy-name SonarSesSend \
-    --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"SonarSesSend\",\"Effect\":\"Allow\",\"Action\":\"ses:SendEmail\",\"Resource\":\"arn:aws:ses:${REGION}:${ACCOUNT_ID}:identity/${SES_IDENTITY}\"}]}"
+    --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"SonarSesSend\",\"Effect\":\"Allow\",\"Action\":[\"ses:SendEmail\",\"ses:SendRawEmail\"],\"Resource\":[\"arn:aws:ses:${REGION}:${ACCOUNT_ID}:identity/*\",\"arn:aws:ses:${REGION}:${ACCOUNT_ID}:configuration-set/*\"]}]}"
   vercel link --yes --project "$VERCEL_PROJECT" --scope "$VERCEL_SCOPE" >/dev/null
   set_env SONAR_SES_SENDER "$SES_SENDER"
   echo "    done. NOTE: SES starts in sandbox (recipients must be verified);"
@@ -102,7 +106,7 @@ cat <<EOF
 
 -- Still manual (only you can provision this) --------------------------------
 Google one-tap:   create an OAuth client (Google Cloud Console → Credentials),
-authorize your origins (https://sonar-bay.vercel.app, http://localhost:3000), then:
+authorize your origins (https://mysonar.zone, https://www.mysonar.zone, http://localhost:3000), then:
     vercel env add NEXT_PUBLIC_GOOGLE_CLIENT_ID $VERCEL_TARGET --scope $VERCEL_SCOPE
     # NEXT_PUBLIC_* is build-time — redeploy after setting it.
     # (Google is optional — email-OTP carries the flow without it.)
