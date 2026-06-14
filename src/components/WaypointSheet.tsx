@@ -13,12 +13,26 @@ interface Props {
   /** The signed-in user's name, attached to the share link as the referrer
    *  (`?r=<username>`). Undefined when anonymous → no referral param. */
   shareUser?: string;
+  /** The signed-in account id, to detect ownership of this waypoint. */
+  currentUserId?: string;
+  /** Open the permanent-waypoint console (shown for owned permanent pins). */
+  onManage?: () => void;
 }
 
-export default function WaypointSheet({ wp, loved, onLove, onClose, shareUser }: Props) {
+export default function WaypointSheet({
+  wp,
+  loved,
+  onLove,
+  onClose,
+  shareUser,
+  currentUserId,
+  onManage,
+}: Props) {
   const ch = CHANNEL_MAP[wp.channel];
   // wp.love is kept authoritative (optimistically adjusted on love/unlove).
   const loveCount = wp.love;
+  // The signed-in user owns this permanent pin → offer the management console.
+  const ownsPermanent = wp.sponsored && !!currentUserId && wp.ownerId === currentUserId;
 
   // "copied" feedback for the clipboard fallback (when navigator.share is absent).
   const [copied, setCopied] = useState(false);
@@ -114,14 +128,25 @@ export default function WaypointSheet({ wp, loved, onLove, onClose, shareUser }:
           <p className="mt-3.5 text-[15px] leading-relaxed text-white/90">{wp.text}</p>
         )}
 
-        {/* sponsored permanent waypoint badge */}
+        {/* sponsored permanent waypoint badge — tappable for the owner */}
         {wp.sponsored && (
-          <div className="mt-4 flex items-center gap-2 rounded-2xl border border-[#ffd35c]/30 bg-[#ffd35c]/10 px-3 py-2">
-            <span className="text-[13px] text-[#ffd35c]">◆</span>
-            <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#ffd35c]">
-              Sponsored{wp.sponsor ? ` · ${wp.sponsor}` : ""} · permanent
+          <button
+            onClick={ownsPermanent ? onManage : undefined}
+            disabled={!ownsPermanent}
+            className="mt-4 flex w-full items-center justify-between gap-2 rounded-2xl border border-[#ffd35c]/30 bg-[#ffd35c]/10 px-3 py-2 text-left disabled:cursor-default"
+          >
+            <span className="flex items-center gap-2">
+              <span className="text-[13px] text-[#ffd35c]">◆</span>
+              <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-[#ffd35c]">
+                Sponsored{wp.sponsor ? ` · ${wp.sponsor}` : ""} · permanent
+              </span>
             </span>
-          </div>
+            {ownsPermanent && (
+              <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[#ffd35c]/80">
+                Manage ›
+              </span>
+            )}
+          </button>
         )}
 
         <div className="mt-4 flex items-center gap-2.5">

@@ -27,13 +27,12 @@ interface Props {
     mediaKey?: string,
   ) => void;
   onClose: () => void;
-  /** Whether the user has an active subscription (unlocks permanent drops). */
-  subscribed?: boolean;
   /** Whether billing is configured on the server. Hides the option when false. */
   billingConfigured?: boolean;
-  /** Tapped when a non-subscriber chooses "Permanent" — the parent opens the
-   *  subscribe/sign-in flow. */
-  onSubscribe?: () => void;
+  /** Whether the user is signed in (permanent waypoints require an account). */
+  signedIn?: boolean;
+  /** Tapped when a signed-out user chooses "Permanent" — parent opens sign-in. */
+  onRequireSignIn?: () => void;
 }
 
 const KINDS: MediaKind[] = ["text", "photo", "video", "voice"];
@@ -48,16 +47,16 @@ const ADD_PROMPT: Record<string, string> = {
 export default function DropComposer({
   onDrop,
   onClose,
-  subscribed = false,
   billingConfigured = false,
-  onSubscribe,
+  signedIn = false,
+  onRequireSignIn,
 }: Props) {
   const [channel, setChannel] = useState<ChannelId>("social");
   const [kind, setKind] = useState<MediaKind>("text");
   const [text, setText] = useState("");
   const [lifespan, setLifespan] = useState(DEFAULT_LIFESPAN_SECONDS);
   // A permanent (never-expiring) drop, mutually exclusive with a preset lifespan.
-  // Only honored server-side when the user has an active subscription.
+  // $5/mo each — billed when the drop is submitted (Checkout or one-click).
   const [permanent, setPermanent] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -275,14 +274,13 @@ export default function DropComposer({
           })}
         </div>
 
-        {/* Permanent (paid) option. Hidden entirely when billing isn't
-            configured. A subscriber toggles it on; a non-subscriber tapping it
-            is sent to the subscribe/sign-in flow (the parent decides which). */}
+        {/* Permanent (paid) option — $5/mo per pin. Hidden when billing isn't
+            configured. A signed-out user tapping it is sent to sign-in first. */}
         {billingConfigured && (
           <button
             onClick={() => {
-              if (subscribed) setPermanent((v) => !v);
-              else onSubscribe?.();
+              if (!signedIn) onRequireSignIn?.();
+              else setPermanent((v) => !v);
             }}
             className="mb-4 flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-[13px]"
             style={{
@@ -294,15 +292,15 @@ export default function DropComposer({
             <span className="flex items-center gap-2">
               <span className="text-[15px]">∞</span> Permanent
             </span>
-            {subscribed ? (
-              <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-white/40">
-                {permanent ? "never expires" : "tap to pin forever"}
-              </span>
-            ) : (
-              <span className="rounded-full bg-sonar/20 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-sonar">
-                Subscribe
-              </span>
-            )}
+            <span
+              className="rounded-full px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em]"
+              style={{
+                background: permanent ? "rgba(52,227,160,.18)" : "rgba(255,255,255,.06)",
+                color: permanent ? "var(--sonar)" : "rgba(255,255,255,.45)",
+              }}
+            >
+              {!signedIn ? "sign in" : permanent ? "selected · $5/mo" : "$5/mo"}
+            </span>
           </button>
         )}
 
@@ -320,7 +318,7 @@ export default function DropComposer({
           {uploading
             ? "Uploading…"
             : permanent
-              ? "Drop · permanent ∞"
+              ? "Drop · permanent · $5/mo"
               : `Drop · expires in ${lifespanLabel(lifespan)}`}
         </button>
       </div>

@@ -5,15 +5,20 @@ import {
   upsertSubscription,
   updateSubscriptionStatusByCustomer,
 } from "@/lib/server/subscriptions";
+import {
+  promoteWaypointToPermanent,
+  expireOwnedPermanent,
+} from "@/lib/server/waypoints";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// POST /api/billing/webhook
-// Stripe → us. The single source that mutates subscription state in DSQL.
-// Signature is verified against the RAW body (request.text(), never .json()) so
-// a forged event can't grant access. Idempotent: Stripe retries, and our upsert
-// converges, so duplicate/out-of-order deliveries are safe.
+// POST /api/billing/webhook — LOCAL DEV webhook (forwarded by `stripe listen`).
+// Prod uses the Lambda Function URL (infra/lambda/stripe-webhook). Both keep the
+// same behavior: verify signature against the RAW body, then (a) mirror the
+// subscription incl. quantity into DSQL, (b) flip the pending pin to permanent on
+// payment, (c) cascade-expire the account's permanent pins when the sub ends.
+// Idempotent — Stripe retries safely.
 export async function POST(request: Request) {
   if (!stripeConfigured() || !dsqlConfigured() || !STRIPE_WEBHOOK_SECRET) {
     return Response.json({ error: "billing not configured" }, { status: 503 });
@@ -25,13 +30,8 @@ export async function POST(request: Request) {
   const raw = await request.text();
   let event: Stripe.Event;
   try {
-    event = await stripe().webhooks.constructEventAsync(
-      raw,
-      sig,
-      STRIPE_WEBHOOK_SECRET,
-    );
+    event = await stripe().webhooks.constructEventAsync(raw, sig, STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    // Bad signature or malformed payload → reject. Don't leak details.
     console.error("stripe webhook signature verification failed", err);
     return Response.json({ error: "invalid signature" }, { status: 400 });
   }
@@ -40,68 +40,83 @@ export async function POST(request: Request) {
     switch (event.type) {
       case "checkout.session.completed": {
         const cs = event.data.object as Stripe.Checkout.Session;
-        // Only subscription checkouts concern us.
         if (cs.mode !== "subscription") break;
-        const accountId =
-          cs.client_reference_id ?? cs.metadata?.account_id ?? null;
-        const customerId = asId(cs.customer);
         const subscriptionId = asId(cs.subscription);
-        if (!accountId || !customerId || !subscriptionId) break;
-
-        // Retrieve the subscription for authoritative status/price/period.
+        if (!subscriptionId) break;
+        // Retrieve the subscription for authoritative status/quantity/metadata.
         const sub = await stripe().subscriptions.retrieve(subscriptionId);
-        await upsertSubscription({
-          accountId,
-          stripeCustomerId: customerId,
-          stripeSubscriptionId: sub.id,
-          status: sub.status,
-          priceId: sub.items.data[0]?.price?.id ?? null,
-          currentPeriodEnd: periodEnd(sub),
-        });
+        await syncSubscription(sub);
+        await promoteFromMetadata(sub);
         break;
       }
 
       case "customer.subscription.created":
-      case "customer.subscription.updated":
+      case "customer.subscription.updated": {
+        const sub = event.data.object as Stripe.Subscription;
+        await syncSubscription(sub);
+        await promoteFromMetadata(sub);
+        break;
+      }
+
       case "customer.subscription.deleted": {
         const sub = event.data.object as Stripe.Subscription;
         const customerId = asId(sub.customer);
-        if (!customerId) break;
-        // Prefer the account_id stamped at checkout so we can upsert even if the
-        // pre-checkout row is missing; otherwise update the existing customer row.
         const accountId = sub.metadata?.account_id ?? null;
         if (accountId) {
           await upsertSubscription({
             accountId,
-            stripeCustomerId: customerId,
+            stripeCustomerId: customerId ?? "",
             stripeSubscriptionId: sub.id,
             status: sub.status,
             priceId: sub.items.data[0]?.price?.id ?? null,
+            quantity: 0,
             currentPeriodEnd: periodEnd(sub),
           });
-        } else {
-          await updateSubscriptionStatusByCustomer(
-            customerId,
-            sub.status,
-            sub.id,
-            periodEnd(sub),
-          );
+          // Subscription ended → the account's permanent pins lose permanence.
+          await expireOwnedPermanent(accountId);
+        } else if (customerId) {
+          await updateSubscriptionStatusByCustomer(customerId, sub.status, sub.id, periodEnd(sub), 0);
         }
         break;
       }
 
       default:
-        // Unhandled event types are acknowledged (200) so Stripe stops retrying.
         break;
     }
   } catch (err) {
-    // A processing failure → 500 so Stripe retries later (the handler is
-    // idempotent, so a retry is safe).
     console.error(`stripe webhook handler failed for ${event.type}`, err);
     return Response.json({ error: "handler error" }, { status: 500 });
   }
 
   return Response.json({ received: true });
+}
+
+/** Upsert the DSQL subscriptions row from a Stripe subscription object. */
+async function syncSubscription(sub: Stripe.Subscription): Promise<void> {
+  const customerId = asId(sub.customer);
+  const accountId = sub.metadata?.account_id ?? null;
+  const quantity = sub.items.data[0]?.quantity ?? 0;
+  if (accountId) {
+    await upsertSubscription({
+      accountId,
+      stripeCustomerId: customerId ?? "",
+      stripeSubscriptionId: sub.id,
+      status: sub.status,
+      priceId: sub.items.data[0]?.price?.id ?? null,
+      quantity,
+      currentPeriodEnd: periodEnd(sub),
+    });
+  } else if (customerId) {
+    await updateSubscriptionStatusByCustomer(customerId, sub.status, sub.id, periodEnd(sub), quantity);
+  }
+}
+
+/** If the subscription carries the first pin's PK/SK (set at checkout), flip that
+ *  pending DynamoDB item to permanent. */
+async function promoteFromMetadata(sub: Stripe.Subscription): Promise<void> {
+  const pk = sub.metadata?.wp_pk;
+  const sk = sub.metadata?.wp_sk;
+  if (pk && sk) await promoteWaypointToPermanent(pk, sk);
 }
 
 /** A Stripe field that's either an id string or an expanded object → the id. */

@@ -65,6 +65,9 @@ function toWaypoint(it: Record<string, unknown>, center: LngLat, now: number): W
     ? Number(it.ttl) * 1000
     : createdAt + TTL_SECONDS * 1000;
   const mediaKey = typeof it.mediaKey === "string" ? it.mediaKey : undefined;
+  // GSI1PK is `USER#<ownerId>`; surface the bare ownerId for owner-only actions.
+  const gsi1pk = typeof it.GSI1PK === "string" ? it.GSI1PK : "";
+  const ownerId = gsi1pk.startsWith("USER#") ? gsi1pk.slice("USER#".length) : undefined;
   return {
     id: String(it.id),
     channel: it.channel as ChannelId,
@@ -76,6 +79,7 @@ function toWaypoint(it: Record<string, unknown>, center: LngLat, now: number): W
     love: Number(it.love ?? 0),
     sponsored: Boolean(it.sponsored),
     sponsor: typeof it.sponsor === "string" ? it.sponsor : undefined,
+    ownerId,
     bearing: bearing(center, pos),
     meters: distance(center, pos),
     expiresAt,
@@ -191,6 +195,201 @@ export async function putWaypoint(input: DropInput): Promise<Waypoint> {
     ConditionExpression: "attribute_not_exists(PK)",
   }));
   return toWaypoint(item, { lat: input.lat, lng: input.lng }, now);
+}
+
+// ---------------------------------------------------------------------------
+// Owner-scoped management (the permanent-waypoint console). All lookups go
+// through GSI1 (GSI1PK = USER#<ownerId>), so the caller only needs the waypoint
+// id + the acting account; the partition key (CH#..#GEO#..) is recovered from
+// the indexed item rather than trusted from the client.
+// ---------------------------------------------------------------------------
+
+/** Raw GSI1 query of everything this account authored (newest SK last). */
+async function queryOwnedItems(ownerId: string): Promise<Record<string, unknown>[]> {
+  const res = await ddb.send(new QueryCommand({
+    TableName: TABLE,
+    IndexName: "GSI1",
+    KeyConditionExpression: "GSI1PK = :u AND begins_with(GSI1SK, :wp)",
+    ExpressionAttributeValues: { ":u": `USER#${ownerId}`, ":wp": "WP#" },
+  }));
+  return res.Items ?? [];
+}
+
+/** The account's own waypoints. `sponsoredOnly` returns just the permanent ones
+ *  (the management console's list). meters/bearing are relative to each pin's
+ *  own position (there is no single center for a "my drops" view). */
+export async function queryMyWaypoints(
+  ownerId: string,
+  sponsoredOnly = false,
+): Promise<Waypoint[]> {
+  const now = Date.now();
+  const items = await queryOwnedItems(ownerId);
+  return items
+    .filter((it) => !sponsoredOnly || Boolean(it.sponsored))
+    .map((it) => toWaypoint(it, { lat: Number(it.lat), lng: Number(it.lng) }, now))
+    .sort((a, b) => b.expiresAt - a.expiresAt);
+}
+
+/** Count this account's permanent (sponsored) waypoints — kept equal to the
+ *  Stripe subscription quantity by the create/delete flows. */
+export async function countPermanentWaypoints(ownerId: string): Promise<number> {
+  const items = await queryOwnedItems(ownerId);
+  return items.filter((it) => Boolean(it.sponsored)).length;
+}
+
+/** Find one of the account's items by waypoint id, or null if absent/not owned. */
+async function findOwnedItem(
+  ownerId: string,
+  id: string,
+): Promise<Record<string, unknown> | null> {
+  const items = await queryOwnedItems(ownerId);
+  return items.find((it) => String(it.id) === id) ?? null;
+}
+
+/** Delete one of the account's waypoints. Returns the deleted Waypoint (so the
+ *  caller can report it), or null if it didn't exist / isn't owned by `ownerId`. */
+export async function deleteOwnedWaypoint(
+  ownerId: string,
+  id: string,
+): Promise<Waypoint | null> {
+  const it = await findOwnedItem(ownerId, id);
+  if (!it) return null;
+  await ddb.send(new DeleteCommand({
+    TableName: TABLE,
+    Key: { PK: String(it.PK), SK: String(it.SK) },
+  }));
+  return toWaypoint(it, { lat: Number(it.lat), lng: Number(it.lng) }, Date.now());
+}
+
+export interface EditWaypointPatch {
+  text?: string;
+  channel?: ChannelId;
+  /** Both lat and lng must be supplied together to move the pin. */
+  lat?: number;
+  lng?: number;
+}
+
+/**
+ * Edit one of the account's waypoints.
+ *  - Caption-only change → in-place UpdateItem.
+ *  - Channel or location change → re-key: the PK (CH#<channel>#GEO#<gh6>) and the
+ *    geohashes are derived from those fields, so the item must move. We write a
+ *    fresh item under the new PK preserving the same waypoint id, createdAt, love
+ *    counts and sponsored/permanent ttl, then delete the old one. Billing is
+ *    unaffected (the subscription is account-level, not pin-keyed).
+ * Returns the updated Waypoint, or null if not found / not owned.
+ */
+export async function editOwnedWaypoint(
+  ownerId: string,
+  id: string,
+  patch: EditWaypointPatch,
+): Promise<Waypoint | null> {
+  const it = await findOwnedItem(ownerId, id);
+  if (!it) return null;
+
+  const newChannel = (patch.channel ?? it.channel) as ChannelId;
+  const newLat = patch.lat ?? Number(it.lat);
+  const newLng = patch.lng ?? Number(it.lng);
+  const newText = patch.text ?? String(it.text);
+  const moved =
+    newChannel !== it.channel ||
+    newLat !== Number(it.lat) ||
+    newLng !== Number(it.lng);
+
+  if (!moved) {
+    // Caption-only edit, in place.
+    await ddb.send(new UpdateCommand({
+      TableName: TABLE,
+      Key: { PK: String(it.PK), SK: String(it.SK) },
+      UpdateExpression: "SET #t = :t",
+      ExpressionAttributeNames: { "#t": "text" },
+      ExpressionAttributeValues: { ":t": newText },
+    }));
+    return toWaypoint(
+      { ...it, text: newText },
+      { lat: newLat, lng: newLng },
+      Date.now(),
+    );
+  }
+
+  // Re-key under the new channel/location, preserving identity + history.
+  const gh6 = encodeGeohash(newLat, newLng, 6);
+  const newItem = {
+    ...it,
+    PK: `CH#${newChannel}#GEO#${gh6}`,
+    SK: `WP#${id}`,
+    GSI1PK: `USER#${ownerId}`,
+    GSI1SK: `WP#${id}`,
+    channel: newChannel,
+    text: newText,
+    lat: newLat,
+    lng: newLng,
+    gh9: encodeGeohash(newLat, newLng, 9),
+  };
+  await ddb.send(new PutCommand({ TableName: TABLE, Item: newItem }));
+  if (String(it.PK) !== String(newItem.PK)) {
+    await ddb.send(new DeleteCommand({
+      TableName: TABLE,
+      Key: { PK: String(it.PK), SK: String(it.SK) },
+    }));
+  }
+  return toWaypoint(newItem, { lat: newLat, lng: newLng }, Date.now());
+}
+
+/**
+ * Promote a pending pin to a permanent (sponsored) waypoint: far-future ttl,
+ * actorType=sponsor, sponsored=true. Called by the Stripe webhook on payment,
+ * keyed by the exact PK/SK stashed in the subscription metadata at checkout.
+ * Idempotent (re-running just re-asserts the same attributes).
+ */
+export async function promoteWaypointToPermanent(
+  pk: string,
+  sk: string,
+  sponsor?: string,
+): Promise<void> {
+  await ddb.send(new UpdateCommand({
+    TableName: TABLE,
+    Key: { PK: pk, SK: sk },
+    UpdateExpression:
+      "SET sponsored = :t, actorType = :a, #ttl = :perm" +
+      (sponsor ? ", sponsor = :s" : ""),
+    ConditionExpression: "attribute_exists(PK)",
+    ExpressionAttributeNames: { "#ttl": "ttl" },
+    ExpressionAttributeValues: {
+      ":t": true,
+      ":a": "sponsor",
+      ":perm": PERMANENT_TTL_SECONDS,
+      ...(sponsor ? { ":s": sponsor } : {}),
+    },
+  })).catch((err) => {
+    // The pending pin already expired (user dawdled past PENDING_SECONDS before
+    // paying) → nothing to promote. Don't fail the webhook.
+    if (err instanceof ConditionalCheckFailedException) return;
+    throw err;
+  });
+}
+
+/**
+ * Expire all of an account's permanent waypoints (cascade when the subscription
+ * is canceled / lapses): drop them back to a now-ish ttl and clear sponsored so
+ * they stop being permanent. Best-effort over the GSI1 page.
+ */
+export async function expireOwnedPermanent(ownerId: string): Promise<number> {
+  const items = await queryOwnedItems(ownerId);
+  const sponsored = items.filter((it) => Boolean(it.sponsored));
+  const nowSec = Math.floor(Date.now() / 1000);
+  await Promise.all(
+    sponsored.map((it) =>
+      ddb.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { PK: String(it.PK), SK: String(it.SK) },
+        UpdateExpression: "SET sponsored = :f, #ttl = :now",
+        ExpressionAttributeNames: { "#ttl": "ttl" },
+        ExpressionAttributeValues: { ":f": false, ":now": nowSec },
+      })).catch(() => {}),
+    ),
+  );
+  return sponsored.length;
 }
 
 export interface LoveInput {

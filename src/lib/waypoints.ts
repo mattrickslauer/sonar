@@ -14,6 +14,7 @@ export interface Waypoint {
   love: number;
   sponsored: boolean; // a paid, permanent waypoint (never expires)
   sponsor?: string; // sponsor/brand label, shown on sponsored waypoints
+  ownerId?: string; // canonical accounts.id of the author (drives owner-only actions)
   bearing: number; // for layout only
   meters: number;
   expiresAt: number; // epoch ms when the waypoint is destroyed (ttl)

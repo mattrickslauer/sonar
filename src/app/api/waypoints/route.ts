@@ -3,7 +3,6 @@ import { isUploadKind } from "@/lib/media";
 import { isValidMediaKey } from "@/lib/server/media";
 import { queryNearby, putWaypoint } from "@/lib/server/waypoints";
 import { resolveIdentity, identityErrorResponse } from "@/lib/server/identity";
-import { hasActiveSubscription } from "@/lib/server/subscriptions";
 
 // Hits DynamoDB on every request — never cached.
 export const runtime = "nodejs";
@@ -86,26 +85,9 @@ export async function POST(request: Request) {
     throw err;
   }
 
-  // A permanent (never-expiring) waypoint is a paid feature. It requires BOTH a
-  // real session (not a guessable anon id) AND an active subscription, checked
-  // server-side against DSQL — the client can't grant itself this by setting a
-  // flag. Without the gate, `permanent` is ignored and the drop is ephemeral.
-  const permanent = body?.permanent === true;
-  if (permanent) {
-    if (!identity.authed) {
-      return Response.json(
-        { error: "sign in to create a permanent waypoint" },
-        { status: 401 },
-      );
-    }
-    if (!(await hasActiveSubscription(identity.userId))) {
-      return Response.json(
-        { error: "an active subscription is required for permanent waypoints" },
-        { status: 402 },
-      );
-    }
-  }
-
+  // This route only creates ephemeral drops. Permanent (paid) waypoints are
+  // created via POST /api/billing/permanent, which handles Stripe Checkout /
+  // quantity and writes the sponsored item itself.
   const lifespanSeconds = Number(body?.lifespanSeconds);
   const waypoint = await putWaypoint({
     channel: body.channel,
@@ -115,13 +97,7 @@ export async function POST(request: Request) {
     lng,
     ownerId: identity.userId,
     author: identity.displayName,
-    // Permanent drops reuse the sponsored path (far-future ttl, never expires);
-    // the author's handle doubles as the sponsor label on the pin.
-    sponsored: permanent || undefined,
-    sponsor: permanent ? identity.displayName : undefined,
-    // A permanent drop carries no author-chosen lifespan.
-    lifespanSeconds:
-      !permanent && Number.isFinite(lifespanSeconds) ? lifespanSeconds : undefined,
+    lifespanSeconds: Number.isFinite(lifespanSeconds) ? lifespanSeconds : undefined,
     mediaKey: typeof mediaKey === "string" ? mediaKey : undefined,
   });
   return Response.json({ waypoint }, { status: 201 });

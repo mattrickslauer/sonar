@@ -39,6 +39,8 @@ interface Props {
   onClose: () => void;
   onSignedIn: (account: Account) => void;
   onSignOut: () => void | Promise<void>;
+  /** Open the permanent-waypoint management console (signed-in only). */
+  onManage?: () => void;
 }
 
 export default function ClaimSheet({
@@ -47,6 +49,7 @@ export default function ClaimSheet({
   onClose,
   onSignedIn,
   onSignOut,
+  onManage,
 }: Props) {
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
@@ -208,6 +211,17 @@ export default function ClaimSheet({
               Your drops and likes are saved to this account — they follow you to
               any device you sign in on.
             </p>
+            {onManage && (
+              <button
+                onClick={onManage}
+                className="mb-2.5 flex w-full items-center justify-between rounded-2xl border border-white/12 bg-black/55 px-4 py-3.5 text-[15px] font-semibold text-white/85"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-sonar">∞</span> Permanent waypoints
+                </span>
+                <span className="text-white/35">›</span>
+              </button>
+            )}
             <button
               onClick={doSignOut}
               disabled={signingOut}

@@ -1,7 +1,10 @@
 // Server-only: durable subscription state in Aurora DSQL — the app's mirror of
-// Stripe's billing authority. Written by the webhook (/api/billing/webhook),
-// read by the permanent-waypoint gate (POST /api/waypoints) and the status
-// endpoint. One row per account (account_id PK); see infra/sql/003_subscriptions.sql.
+// Stripe's billing authority. Written by the webhook (the Stripe webhook Lambda
+// in prod; /api/billing/webhook for local dev) and the permanent-waypoint
+// billing routes; read by the management console. ONE row per account
+// (account_id PK): a single Stripe subscription whose `quantity` = the number of
+// permanent waypoints the account pays for ($5/mo each). See
+// infra/sql/003_subscriptions.sql + 004_subscription_quantity.sql.
 import { query } from "@/lib/server/dsql";
 
 export interface Subscription {
@@ -10,6 +13,8 @@ export interface Subscription {
   stripeSubscriptionId: string | null;
   status: string;
   priceId: string | null;
+  /** Number of permanent waypoints billed (= Stripe sub quantity). 0 when none. */
+  quantity: number;
   currentPeriodEnd: string | null;
   createdAt: string;
   updatedAt: string;
@@ -30,7 +35,8 @@ const SERIALIZATION_FAILURE = "40001"; // DSQL OCC conflict
 const SELECT_COLS = `
   account_id AS "accountId", stripe_customer_id AS "stripeCustomerId",
   stripe_subscription_id AS "stripeSubscriptionId", status,
-  price_id AS "priceId", current_period_end AS "currentPeriodEnd",
+  price_id AS "priceId", COALESCE(quantity, 0) AS "quantity",
+  current_period_end AS "currentPeriodEnd",
   created_at AS "createdAt", updated_at AS "updatedAt"
 `;
 
@@ -85,6 +91,8 @@ export interface UpsertInput {
   stripeSubscriptionId?: string | null;
   status: string;
   priceId?: string | null;
+  /** Permanent-waypoint count (= Stripe sub quantity). */
+  quantity?: number | null;
   /** Epoch seconds (Stripe's current_period_end), or null. */
   currentPeriodEnd?: number | null;
 }
@@ -105,14 +113,15 @@ export async function upsertSubscription(input: UpsertInput): Promise<void> {
     await query(
       `INSERT INTO subscriptions
          (account_id, stripe_customer_id, stripe_subscription_id, status,
-          price_id, current_period_end, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, now())
+          price_id, quantity, current_period_end, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, now())
        ON CONFLICT (account_id) DO UPDATE SET
-         stripe_customer_id     = $7,
-         stripe_subscription_id = $8,
-         status                 = $9,
-         price_id               = $10,
-         current_period_end     = $11,
+         stripe_customer_id     = $8,
+         stripe_subscription_id = $9,
+         status                 = $10,
+         price_id               = $11,
+         quantity               = $12,
+         current_period_end     = $13,
          updated_at             = now()`,
       [
         input.accountId,
@@ -120,14 +129,27 @@ export async function upsertSubscription(input: UpsertInput): Promise<void> {
         input.stripeSubscriptionId ?? null,
         input.status,
         input.priceId ?? null,
+        input.quantity ?? null,
         periodEnd,
         // ON CONFLICT update half — distinct placeholders, same values.
         input.stripeCustomerId,
         input.stripeSubscriptionId ?? null,
         input.status,
         input.priceId ?? null,
+        input.quantity ?? null,
         periodEnd,
       ],
+    );
+  });
+}
+
+/** Set just the quantity for an existing account row (after a one-click add or a
+ *  delete adjusts the Stripe sub quantity). The webhook also reconciles it. */
+export async function setQuantity(accountId: string, quantity: number): Promise<void> {
+  await withRetry(async () => {
+    await query(
+      `UPDATE subscriptions SET quantity = $2, updated_at = now() WHERE account_id = $1`,
+      [accountId, quantity],
     );
   });
 }
@@ -140,6 +162,7 @@ export async function updateSubscriptionStatusByCustomer(
   status: string,
   stripeSubscriptionId?: string | null,
   currentPeriodEnd?: number | null,
+  quantity?: number | null,
 ): Promise<void> {
   const periodEnd =
     currentPeriodEnd != null
@@ -149,9 +172,9 @@ export async function updateSubscriptionStatusByCustomer(
     await query(
       `UPDATE subscriptions
          SET status = $2, stripe_subscription_id = $3,
-             current_period_end = $4, updated_at = now()
+             current_period_end = $4, quantity = $5, updated_at = now()
        WHERE stripe_customer_id = $1`,
-      [stripeCustomerId, status, stripeSubscriptionId ?? null, periodEnd],
+      [stripeCustomerId, status, stripeSubscriptionId ?? null, periodEnd, quantity ?? null],
     );
   });
 }

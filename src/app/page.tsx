@@ -29,11 +29,7 @@ import {
   type Account,
 } from "@/lib/auth";
 import { reverseGeocode } from "@/lib/geocode";
-import {
-  fetchSubscription,
-  startCheckout,
-  type SubscriptionStatus,
-} from "@/lib/billing";
+import { createPermanentWaypoint, fetchPermanentConsole } from "@/lib/billing";
 import { DEFAULT_RANGE, RANGE_MAP, RangeMode } from "@/lib/range";
 import TopBar from "@/components/TopBar";
 import RangeSelector from "@/components/RangeSelector";
@@ -44,6 +40,7 @@ import ClusterSheet from "@/components/ClusterSheet";
 import DropComposer from "@/components/DropComposer";
 import LocationGate from "@/components/LocationGate";
 import ClaimSheet from "@/components/ClaimSheet";
+import ManageSheet from "@/components/ManageSheet";
 
 // mapbox-gl touches window → load the map client-side only
 const RadarMap = dynamic(() => import("@/components/RadarMap"), { ssr: false });
@@ -81,9 +78,11 @@ export default function Home() {
   // cookie; this is just the display state.
   const [account, setAccount] = useState<Account | null>(null);
   const [claimOpen, setClaimOpen] = useState(false);
-  // Subscription state — unlocks permanent (never-expiring) drops. null until
-  // the first /api/billing/status check resolves.
-  const [subscription, setSubscription] = useState<SubscriptionStatus | null>(null);
+  // The permanent-waypoint management console (signed-in only).
+  const [manageOpen, setManageOpen] = useState(false);
+  // Whether Stripe billing is configured on the server (gates the "Permanent ·
+  // $5/mo" option in the composer). Resolved from the billing console endpoint.
+  const [billingConfigured, setBillingConfigured] = useState(false);
   // Travel-mode range: how far Sonar fetches waypoints + sizes the floor radar.
   const [range, setRange] = useState<RangeMode>(DEFAULT_RANGE);
   const radiusMeters = RANGE_MAP[range].radiusMeters;
@@ -104,14 +103,14 @@ export default function Home() {
     fetchMe().then(setAccount);
   }, []);
 
-  // Load subscription status whenever the signed-in account changes (sign-in /
-  // sign-out flips entitlement). Anonymous users resolve to { active: false }.
+  // Resolve whether billing is configured (shows the "Permanent · $5/mo" option).
   useEffect(() => {
-    fetchSubscription().then(setSubscription);
+    fetchPermanentConsole().then((c) => setBillingConfigured(c.configured));
   }, [account]);
 
-  // Returning from Stripe Checkout (`?billing=success`) → re-check status (the
-  // webhook may need a beat, so poll a few times) and clean the URL.
+  // Returning from Stripe Checkout (`?billing=success`) → the webhook flips the
+  // pending pin to permanent asynchronously, so re-poll nearby waypoints a few
+  // times to pick it up, and clean the URL.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const billing = params.get("billing");
@@ -124,15 +123,14 @@ export default function Home() {
       window.location.pathname + (qs ? `?${qs}` : ""),
     );
     if (billing !== "success") return;
-    // The webhook lands asynchronously; re-poll status a handful of times so the
-    // "Permanent" option unlocks shortly after a successful subscribe.
     let tries = 0;
-    const poll = () =>
-      fetchSubscription().then((s) => {
-        setSubscription(s);
-        if (!s.active && ++tries < 5) setTimeout(poll, 1500);
-      });
-    poll();
+    const poll = () => {
+      const c = centerRef.current;
+      if (c) reloadWaypoints();
+      if (++tries < 5) setTimeout(poll, 1500);
+    };
+    setTimeout(poll, 1200);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Honor an inbound share link. The link carries the waypoint id, its location
@@ -421,6 +419,15 @@ export default function Home() {
     setSelectedId((cur) => (cur === id ? null : cur));
   }
 
+  // Refetch nearby waypoints (after a checkout return or a console edit/delete).
+  function reloadWaypoints() {
+    const c = centerRef.current;
+    if (!c) return;
+    fetchWaypoints(c, undefined, radiusMeters)
+      .then(setWaypoints)
+      .catch((e) => console.error("reload waypoints", e));
+  }
+
   function drop(
     channel: ChannelId,
     kind: MediaKind,
@@ -430,14 +437,14 @@ export default function Home() {
     mediaKey?: string,
   ) {
     if (!center) return; // can't drop without a location
-    // Optimistic insert for instant feedback, then persist to DynamoDB. The
-    // optimistic copy carries no mediaUrl yet — the saved waypoint the server
-    // returns fills it in (its presigned /api/media/view URL). A permanent drop
-    // shows a far-future expiry so its countdown ring reads "never" immediately.
+    if (permanent) {
+      void dropPermanent({ channel, kind, text, lat: center.lat, lng: center.lng, mediaKey });
+      return;
+    }
+    // Ephemeral drop: optimistic insert for instant feedback, then persist. The
+    // optimistic copy carries no mediaUrl yet — the saved waypoint fills it in.
     const now = Date.now();
-    // Mirror the server's PERMANENT_TTL sentinel so the optimistic ring matches.
-    const PERMANENT_EXPIRES = new Date("2999-01-01T00:00:00Z").getTime();
-    const expiresAt = permanent ? PERMANENT_EXPIRES : now + lifespanSeconds * 1000;
+    const expiresAt = now + lifespanSeconds * 1000;
     const optimistic: Waypoint = {
       id: `drop_${now}`,
       channel,
@@ -447,8 +454,7 @@ export default function Home() {
       pos: center,
       minutesAgo: 0,
       love: 0,
-      sponsored: permanent,
-      sponsor: permanent ? account?.displayName : undefined,
+      sponsored: false,
       bearing: 0,
       meters: 0,
       expiresAt,
@@ -468,35 +474,54 @@ export default function Home() {
       center,
       anonId: userId,
       lifespanSeconds,
-      permanent,
       mediaKey,
       ref: loadReferrer() ?? undefined,
     })
       .then((saved) => {
-        setWaypoints((prev) =>
-          prev.map((w) => (w.id === optimistic.id ? saved : w))
-        );
+        setWaypoints((prev) => prev.map((w) => (w.id === optimistic.id ? saved : w)));
         setSelectedId(saved.id);
       })
       .catch((e) => {
-        // The drop was rejected (e.g. the permanent-waypoint gate) — roll back
-        // the optimistic pin so the map reflects reality.
         console.error("drop", e);
         setWaypoints((prev) => prev.filter((w) => w.id !== optimistic.id));
         setSelectedId((cur) => (cur === optimistic.id ? null : cur));
       });
   }
 
-  // A non-subscriber tapped "Permanent": send a signed-in user to Stripe
-  // Checkout; send a signed-out user to the sign-in sheet first (only claimed
-  // accounts can subscribe).
-  function handleSubscribe() {
-    if (!account) {
-      setComposerOpen(false);
-      setClaimOpen(true);
-      return;
+  // A permanent ($5/mo) drop: first one goes through Stripe Checkout (redirect);
+  // later ones are added one-click and returned ready to drop on the map.
+  async function dropPermanent(draft: {
+    channel: ChannelId;
+    kind: MediaKind;
+    text: string;
+    lat: number;
+    lng: number;
+    mediaKey?: string;
+  }) {
+    setComposerOpen(false);
+    try {
+      const res = await createPermanentWaypoint(draft);
+      if (res.url) {
+        window.location.assign(res.url); // first-time Checkout
+        return;
+      }
+      if (res.waypoint) {
+        const wp = res.waypoint;
+        setWaypoints((prev) => (prev.some((w) => w.id === wp.id) ? prev : [wp, ...prev]));
+        setVisible((prev) => new Set(prev).add(wp.channel));
+        setSelectedId(wp.id);
+        setRecenterSignal((s) => s + 1);
+      }
+    } catch (e) {
+      console.error("permanent drop", e);
+      alert(e instanceof Error ? e.message : "could not create permanent waypoint");
     }
-    startCheckout().catch((e) => console.error("checkout", e));
+  }
+
+  // A signed-out user tapped "Permanent": permanent waypoints need an account.
+  function handleRequireSignIn() {
+    setComposerOpen(false);
+    setClaimOpen(true);
   }
 
   // Location is required: until we have a fix, gate the whole app behind the
@@ -606,6 +631,11 @@ export default function Home() {
             onLove={love}
             onClose={() => setSelectedId(null)}
             shareUser={account?.displayName}
+            currentUserId={account?.id}
+            onManage={() => {
+              setSelectedId(null);
+              setManageOpen(true);
+            }}
           />
         )}
 
@@ -624,9 +654,9 @@ export default function Home() {
           <DropComposer
             onDrop={drop}
             onClose={() => setComposerOpen(false)}
-            subscribed={subscription?.active ?? false}
-            billingConfigured={subscription?.configured ?? false}
-            onSubscribe={handleSubscribe}
+            billingConfigured={billingConfigured}
+            signedIn={!!account}
+            onRequireSignIn={handleRequireSignIn}
           />
         )}
 
@@ -644,6 +674,18 @@ export default function Home() {
               setAccount(null);
               setClaimOpen(false);
             }}
+            onManage={() => {
+              setClaimOpen(false);
+              setManageOpen(true);
+            }}
+          />
+        )}
+
+        {manageOpen && (
+          <ManageSheet
+            here={center}
+            onClose={() => setManageOpen(false)}
+            onChanged={reloadWaypoints}
           />
         )}
       </div>

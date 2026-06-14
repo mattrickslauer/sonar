@@ -28,14 +28,26 @@ const crypto = require("node:crypto");
 const { Client } = require("pg");
 const { DsqlSigner } = require("@aws-sdk/dsql-signer");
 const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
+const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const {
+  DynamoDBDocumentClient,
+  QueryCommand,
+  UpdateCommand,
+} = require("@aws-sdk/lib-dynamodb");
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const DSQL_ENDPOINT = process.env.DSQL_ENDPOINT;
+const TABLE_NAME = process.env.TABLE_NAME;
 const WEBHOOK_SECRET_PARAM = process.env.WEBHOOK_SECRET_PARAM;
 // Reject events whose timestamp is older than this (replay protection).
 const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
+// Far-future ttl for permanent pins (mirrors src/lib/server/waypoints.ts).
+const PERMANENT_TTL = Math.floor(new Date("2999-01-01T00:00:00Z").getTime() / 1000);
 
 const ssm = new SSMClient({ region: REGION });
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }), {
+  marshallOptions: { removeUndefinedValues: true },
+});
 let cachedSecret;
 
 /** Fetch + cache the webhook signing secret from SSM (decrypted). */
@@ -98,18 +110,20 @@ async function dsqlConnect() {
 }
 
 // Idempotent per-account upsert; mirrors src/lib/server/subscriptions.ts.
-// Distinct $-placeholders per column even when values repeat (DSQL 42P08).
+// `quantity` = number of permanent waypoints billed. Distinct $-placeholders per
+// column even when values repeat (DSQL 42P08).
 const UPSERT = `
   INSERT INTO subscriptions
     (account_id, stripe_customer_id, stripe_subscription_id, status,
-     price_id, current_period_end, updated_at)
-  VALUES ($1, $2, $3, $4, $5, $6, now())
+     price_id, quantity, current_period_end, updated_at)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, now())
   ON CONFLICT (account_id) DO UPDATE SET
-    stripe_customer_id     = $7,
-    stripe_subscription_id = $8,
-    status                 = $9,
-    price_id               = $10,
-    current_period_end     = $11,
+    stripe_customer_id     = $8,
+    stripe_subscription_id = $9,
+    status                 = $10,
+    price_id               = $11,
+    quantity               = $12,
+    current_period_end     = $13,
     updated_at             = now()
 `;
 
@@ -117,9 +131,50 @@ const UPSERT = `
 const UPDATE_BY_CUSTOMER = `
   UPDATE subscriptions
      SET status = $2, stripe_subscription_id = $3,
-         current_period_end = $4, updated_at = now()
+         current_period_end = $4, quantity = $5, updated_at = now()
    WHERE stripe_customer_id = $1
 `;
+
+/** Flip the pending pin (PK/SK from subscription metadata) to permanent. */
+async function promotePending(pk, sk) {
+  if (!pk || !sk || !TABLE_NAME) return;
+  try {
+    await ddb.send(new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: pk, SK: sk },
+      UpdateExpression: "SET sponsored = :t, actorType = :a, #ttl = :perm",
+      ConditionExpression: "attribute_exists(PK)",
+      ExpressionAttributeNames: { "#ttl": "ttl" },
+      ExpressionAttributeValues: { ":t": true, ":a": "sponsor", ":perm": PERMANENT_TTL },
+    }));
+  } catch (err) {
+    // Pending pin already expired before payment → nothing to promote.
+    if (err.name !== "ConditionalCheckFailedException") throw err;
+  }
+}
+
+/** Cascade: when a subscription ends, expire the account's permanent pins
+ *  (clear sponsored + drop ttl to now) so they stop being permanent. */
+async function expireOwnedPermanent(accountId) {
+  if (!accountId || !TABLE_NAME) return;
+  const res = await ddb.send(new QueryCommand({
+    TableName: TABLE_NAME,
+    IndexName: "GSI1",
+    KeyConditionExpression: "GSI1PK = :u AND begins_with(GSI1SK, :wp)",
+    ExpressionAttributeValues: { ":u": `USER#${accountId}`, ":wp": "WP#" },
+  }));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const sponsored = (res.Items || []).filter((it) => it.sponsored);
+  await Promise.all(sponsored.map((it) =>
+    ddb.send(new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { PK: it.PK, SK: it.SK },
+      UpdateExpression: "SET sponsored = :f, #ttl = :now",
+      ExpressionAttributeNames: { "#ttl": "ttl" },
+      ExpressionAttributeValues: { ":f": false, ":now": nowSec },
+    })).catch(() => {}),
+  ));
+}
 
 /** epoch-seconds → ISO timestamptz (or null). */
 function toIso(sec) {
@@ -169,23 +224,12 @@ exports.handler = async (event) => {
   let client;
   try {
     switch (stripeEvent.type) {
-      case "checkout.session.completed": {
-        const cs = stripeEvent.data.object;
-        if (cs.mode !== "subscription") break;
-        const accountId = cs.client_reference_id || (cs.metadata && cs.metadata.account_id) || null;
-        const customerId = asId(cs.customer);
-        const subscriptionId = asId(cs.subscription);
-        if (!accountId || !customerId) break;
-        // We don't fetch the subscription here (no API key); the
-        // customer.subscription.created event that fires alongside carries the
-        // authoritative status. Record the mapping with a provisional status.
-        client = client || (await dsqlConnect());
-        await client.query(UPSERT, [
-          accountId, customerId, subscriptionId, "incomplete", null, null,
-          customerId, subscriptionId, "incomplete", null, null,
-        ]);
+      // checkout.session.completed is intentionally a no-op: we have no Stripe
+      // API key here to fetch the subscription, and the customer.subscription.*
+      // events (below) carry the authoritative status, quantity, and metadata.
+      case "checkout.session.completed":
         break;
-      }
+
       case "customer.subscription.created":
       case "customer.subscription.updated":
       case "customer.subscription.deleted": {
@@ -197,15 +241,28 @@ exports.handler = async (event) => {
           sub.items && sub.items.data && sub.items.data[0] && sub.items.data[0].price
             ? sub.items.data[0].price.id
             : null;
+        const deleted = stripeEvent.type === "customer.subscription.deleted";
+        const quantity = deleted
+          ? 0
+          : (sub.items && sub.items.data && sub.items.data[0] && sub.items.data[0].quantity) || 0;
         const pEnd = toIso(periodEnd(sub));
+
         client = client || (await dsqlConnect());
         if (accountId) {
           await client.query(UPSERT, [
-            accountId, customerId, sub.id, sub.status, priceId, pEnd,
-            customerId, sub.id, sub.status, priceId, pEnd,
+            accountId, customerId, sub.id, sub.status, priceId, quantity, pEnd,
+            customerId, sub.id, sub.status, priceId, quantity, pEnd,
           ]);
         } else {
-          await client.query(UPDATE_BY_CUSTOMER, [customerId, sub.status, sub.id, pEnd]);
+          await client.query(UPDATE_BY_CUSTOMER, [customerId, sub.status, sub.id, pEnd, quantity]);
+        }
+
+        if (deleted) {
+          // Subscription ended → the account's permanent pins lose permanence.
+          await expireOwnedPermanent(accountId);
+        } else {
+          // First pin: flip its pending DynamoDB item to permanent (PK/SK in meta).
+          await promotePending(sub.metadata && sub.metadata.wp_pk, sub.metadata && sub.metadata.wp_sk);
         }
         break;
       }

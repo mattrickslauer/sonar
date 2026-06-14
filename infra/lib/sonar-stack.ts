@@ -249,6 +249,9 @@ export class SonarStack extends cdk.Stack {
       env: { WEBHOOK_SECRET_PARAM: stripeWebhookSecretParam },
     });
     stripeWebhook.addToRolePolicy(dsqlConnect); // admin DSQL auth
+    // Needs the table to flip a paid pin to permanent and to cascade-expire the
+    // account's pins on cancel. TABLE_NAME is already in its env via commonEnv.
+    table.grantReadWriteData(stripeWebhook);
     stripeWebhook.addToRolePolicy(
       new iam.PolicyStatement({
         sid: "SonarStripeWebhookSecretRead",
