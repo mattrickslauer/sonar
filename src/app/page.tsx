@@ -29,6 +29,11 @@ import {
   type Account,
 } from "@/lib/auth";
 import { reverseGeocode } from "@/lib/geocode";
+import {
+  fetchSubscription,
+  startCheckout,
+  type SubscriptionStatus,
+} from "@/lib/billing";
 import { DEFAULT_RANGE, RANGE_MAP, RangeMode } from "@/lib/range";
 import TopBar from "@/components/TopBar";
 import RangeSelector from "@/components/RangeSelector";
@@ -76,6 +81,9 @@ export default function Home() {
   // cookie; this is just the display state.
   const [account, setAccount] = useState<Account | null>(null);
   const [claimOpen, setClaimOpen] = useState(false);
+  // Subscription state — unlocks permanent (never-expiring) drops. null until
+  // the first /api/billing/status check resolves.
+  const [subscription, setSubscription] = useState<SubscriptionStatus | null>(null);
   // Travel-mode range: how far Sonar fetches waypoints + sizes the floor radar.
   const [range, setRange] = useState<RangeMode>(DEFAULT_RANGE);
   const radiusMeters = RANGE_MAP[range].radiusMeters;
@@ -94,6 +102,37 @@ export default function Home() {
   useEffect(() => {
     setUserId(loadAnonId());
     fetchMe().then(setAccount);
+  }, []);
+
+  // Load subscription status whenever the signed-in account changes (sign-in /
+  // sign-out flips entitlement). Anonymous users resolve to { active: false }.
+  useEffect(() => {
+    fetchSubscription().then(setSubscription);
+  }, [account]);
+
+  // Returning from Stripe Checkout (`?billing=success`) → re-check status (the
+  // webhook may need a beat, so poll a few times) and clean the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const billing = params.get("billing");
+    if (!billing) return;
+    params.delete("billing");
+    const qs = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (qs ? `?${qs}` : ""),
+    );
+    if (billing !== "success") return;
+    // The webhook lands asynchronously; re-poll status a handful of times so the
+    // "Permanent" option unlocks shortly after a successful subscribe.
+    let tries = 0;
+    const poll = () =>
+      fetchSubscription().then((s) => {
+        setSubscription(s);
+        if (!s.active && ++tries < 5) setTimeout(poll, 1500);
+      });
+    poll();
   }, []);
 
   // Honor an inbound share link. The link carries the waypoint id, its location
@@ -387,13 +426,18 @@ export default function Home() {
     kind: MediaKind,
     text: string,
     lifespanSeconds: number,
+    permanent: boolean,
     mediaKey?: string,
   ) {
     if (!center) return; // can't drop without a location
     // Optimistic insert for instant feedback, then persist to DynamoDB. The
     // optimistic copy carries no mediaUrl yet — the saved waypoint the server
-    // returns fills it in (its presigned /api/media/view URL).
+    // returns fills it in (its presigned /api/media/view URL). A permanent drop
+    // shows a far-future expiry so its countdown ring reads "never" immediately.
     const now = Date.now();
+    // Mirror the server's PERMANENT_TTL sentinel so the optimistic ring matches.
+    const PERMANENT_EXPIRES = new Date("2999-01-01T00:00:00Z").getTime();
+    const expiresAt = permanent ? PERMANENT_EXPIRES : now + lifespanSeconds * 1000;
     const optimistic: Waypoint = {
       id: `drop_${now}`,
       channel,
@@ -403,11 +447,12 @@ export default function Home() {
       pos: center,
       minutesAgo: 0,
       love: 0,
-      sponsored: false,
+      sponsored: permanent,
+      sponsor: permanent ? account?.displayName : undefined,
       bearing: 0,
       meters: 0,
-      expiresAt: now + lifespanSeconds * 1000,
-      lifespanMs: lifespanSeconds * 1000,
+      expiresAt,
+      lifespanMs: Math.max(1, expiresAt - now),
       mediaKey,
     };
     setWaypoints((prev) => [optimistic, ...prev]);
@@ -423,6 +468,7 @@ export default function Home() {
       center,
       anonId: userId,
       lifespanSeconds,
+      permanent,
       mediaKey,
       ref: loadReferrer() ?? undefined,
     })
@@ -432,7 +478,25 @@ export default function Home() {
         );
         setSelectedId(saved.id);
       })
-      .catch((e) => console.error("drop", e));
+      .catch((e) => {
+        // The drop was rejected (e.g. the permanent-waypoint gate) — roll back
+        // the optimistic pin so the map reflects reality.
+        console.error("drop", e);
+        setWaypoints((prev) => prev.filter((w) => w.id !== optimistic.id));
+        setSelectedId((cur) => (cur === optimistic.id ? null : cur));
+      });
+  }
+
+  // A non-subscriber tapped "Permanent": send a signed-in user to Stripe
+  // Checkout; send a signed-out user to the sign-in sheet first (only claimed
+  // accounts can subscribe).
+  function handleSubscribe() {
+    if (!account) {
+      setComposerOpen(false);
+      setClaimOpen(true);
+      return;
+    }
+    startCheckout().catch((e) => console.error("checkout", e));
   }
 
   // Location is required: until we have a fix, gate the whole app behind the
@@ -557,7 +621,13 @@ export default function Home() {
         )}
 
         {composerOpen && (
-          <DropComposer onDrop={drop} onClose={() => setComposerOpen(false)} />
+          <DropComposer
+            onDrop={drop}
+            onClose={() => setComposerOpen(false)}
+            subscribed={subscription?.active ?? false}
+            billingConfigured={subscription?.configured ?? false}
+            onSubscribe={handleSubscribe}
+          />
         )}
 
         {claimOpen && (

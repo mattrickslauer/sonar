@@ -175,6 +175,9 @@ export async function postDrop(input: {
   anonId: string;
   lifespanSeconds?: number;
   mediaKey?: string;
+  /** A permanent, never-expiring waypoint. Server-gated on an active
+   *  subscription; the client flag alone grants nothing. */
+  permanent?: boolean;
   /** Referrer username from an inbound shared link — for set-once attribution. */
   ref?: string;
 }): Promise<Waypoint> {
@@ -190,10 +193,15 @@ export async function postDrop(input: {
       anonId: input.anonId,
       lifespanSeconds: input.lifespanSeconds,
       mediaKey: input.mediaKey,
+      permanent: input.permanent,
       ref: input.ref,
     }),
   });
-  if (!res.ok) throw new Error(`postDrop failed: ${res.status}`);
+  if (!res.ok) {
+    // Surface the server's gate message (401 sign-in / 402 needs subscription).
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.error ?? `postDrop failed: ${res.status}`);
+  }
   const data = await res.json();
   return data.waypoint as Waypoint;
 }

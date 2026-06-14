@@ -2,8 +2,9 @@
   "name": "sonar-dsql-layer",
   "version": "1.0.0",
   "private": true,
-  "description": "Lambda layer deps for connecting to Aurora DSQL (promote + meter consumers).",
+  "description": "Lambda layer deps for connecting to Aurora DSQL (meter + stripe-webhook consumers) and reading the webhook secret from SSM.",
   "dependencies": {
+    "@aws-sdk/client-ssm": "^3.731.0",
     "@aws-sdk/dsql-signer": "^3.731.0",
     "pg": "^8.13.1"
   }

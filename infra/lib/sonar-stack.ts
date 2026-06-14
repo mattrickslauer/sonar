@@ -232,6 +232,37 @@ export class SonarStack extends cdk.Stack {
     );
 
     // ---------------------------------------------------------------------
+    // Stripe webhook → DSQL subscription state (paid permanent waypoints)
+    // ---------------------------------------------------------------------
+    // A public Lambda Function URL receives Stripe events, verifies the HMAC
+    // signature, and mirrors subscription state into the DSQL `subscriptions`
+    // table that the Next app gates the permanent-waypoint feature on. Connects
+    // to DSQL as admin via the shared layer, like the meter consumer.
+    //
+    // The webhook signing secret lives in SSM Parameter Store (created out of
+    // band after the Stripe endpoint is registered against this Function URL),
+    // so it never enters git or the CloudFormation template and rotates without
+    // a redeploy. The Lambda reads it at runtime.
+    const stripeWebhookSecretParam = "/sonar/stripe/webhook-secret";
+    const stripeWebhook = makeFn("StripeWebhookFn", "stripe-webhook", {
+      layers: [dsqlLayer],
+      env: { WEBHOOK_SECRET_PARAM: stripeWebhookSecretParam },
+    });
+    stripeWebhook.addToRolePolicy(dsqlConnect); // admin DSQL auth
+    stripeWebhook.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "SonarStripeWebhookSecretRead",
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${region}:${this.account}:parameter${stripeWebhookSecretParam}`,
+        ],
+      }),
+    );
+    const stripeWebhookUrl = stripeWebhook.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE, // Stripe is unauthenticated; HMAC secures it
+    });
+
+    // ---------------------------------------------------------------------
     // Bot liveness tick (EventBridge → Lambda)
     // ---------------------------------------------------------------------
     // Reads active cells from PRESENCE and tops up quiet ones with templated
@@ -349,6 +380,12 @@ export class SonarStack extends cdk.Stack {
       value: cdk.Stack.of(this).toJsonString(dsqlUserPolicy.toJSON()),
       description:
         "Least-privilege dsql:DbConnect policy to attach to the sonar-vercel IAM user",
+    });
+    new cdk.CfnOutput(this, "StripeWebhookUrl", {
+      value: stripeWebhookUrl.url,
+      description:
+        "Register this as a Stripe webhook endpoint; put its signing secret in SSM " +
+        stripeWebhookSecretParam,
     });
     new cdk.CfnOutput(this, "WsApiEndpoint", {
       value: wsStage.url,

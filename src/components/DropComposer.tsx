@@ -23,9 +23,17 @@ interface Props {
     kind: MediaKind,
     text: string,
     lifespanSeconds: number,
+    permanent: boolean,
     mediaKey?: string,
   ) => void;
   onClose: () => void;
+  /** Whether the user has an active subscription (unlocks permanent drops). */
+  subscribed?: boolean;
+  /** Whether billing is configured on the server. Hides the option when false. */
+  billingConfigured?: boolean;
+  /** Tapped when a non-subscriber chooses "Permanent" — the parent opens the
+   *  subscribe/sign-in flow. */
+  onSubscribe?: () => void;
 }
 
 const KINDS: MediaKind[] = ["text", "photo", "video", "voice"];
@@ -37,11 +45,20 @@ const ADD_PROMPT: Record<string, string> = {
   voice: "Record or upload audio",
 };
 
-export default function DropComposer({ onDrop, onClose }: Props) {
+export default function DropComposer({
+  onDrop,
+  onClose,
+  subscribed = false,
+  billingConfigured = false,
+  onSubscribe,
+}: Props) {
   const [channel, setChannel] = useState<ChannelId>("social");
   const [kind, setKind] = useState<MediaKind>("text");
   const [text, setText] = useState("");
   const [lifespan, setLifespan] = useState(DEFAULT_LIFESPAN_SECONDS);
+  // A permanent (never-expiring) drop, mutually exclusive with a preset lifespan.
+  // Only honored server-side when the user has an active subscription.
+  const [permanent, setPermanent] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -104,7 +121,7 @@ export default function DropComposer({ onDrop, onClose }: Props) {
         setUploading(true);
         mediaKey = await uploadMedia(file, channel, kind);
       }
-      onDrop(channel, kind, text.trim(), lifespan, mediaKey);
+      onDrop(channel, kind, text.trim(), lifespan, permanent, mediaKey);
     } catch (err) {
       setError(err instanceof Error ? err.message : "upload failed");
       setUploading(false);
@@ -235,22 +252,59 @@ export default function DropComposer({ onDrop, onClose }: Props) {
         <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-white/40">
           lifespan
         </p>
-        <div className="mb-4 flex gap-2">
-          {LIFESPAN_PRESETS.map((p) => (
-            <button
-              key={p.seconds}
-              onClick={() => setLifespan(p.seconds)}
-              className="flex-1 rounded-xl border py-2 text-[13px]"
-              style={{
-                borderColor: lifespan === p.seconds ? "var(--sonar)" : "rgba(255,255,255,.12)",
-                background: lifespan === p.seconds ? "rgba(52,227,160,.12)" : "transparent",
-                color: lifespan === p.seconds ? "#fff" : "rgba(255,255,255,.6)",
-              }}
-            >
-              {p.label}
-            </button>
-          ))}
+        <div className="mb-3 flex gap-2">
+          {LIFESPAN_PRESETS.map((p) => {
+            const active = !permanent && lifespan === p.seconds;
+            return (
+              <button
+                key={p.seconds}
+                onClick={() => {
+                  setLifespan(p.seconds);
+                  setPermanent(false);
+                }}
+                className="flex-1 rounded-xl border py-2 text-[13px]"
+                style={{
+                  borderColor: active ? "var(--sonar)" : "rgba(255,255,255,.12)",
+                  background: active ? "rgba(52,227,160,.12)" : "transparent",
+                  color: active ? "#fff" : "rgba(255,255,255,.6)",
+                }}
+              >
+                {p.label}
+              </button>
+            );
+          })}
         </div>
+
+        {/* Permanent (paid) option. Hidden entirely when billing isn't
+            configured. A subscriber toggles it on; a non-subscriber tapping it
+            is sent to the subscribe/sign-in flow (the parent decides which). */}
+        {billingConfigured && (
+          <button
+            onClick={() => {
+              if (subscribed) setPermanent((v) => !v);
+              else onSubscribe?.();
+            }}
+            className="mb-4 flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-[13px]"
+            style={{
+              borderColor: permanent ? "var(--sonar)" : "rgba(255,255,255,.12)",
+              background: permanent ? "rgba(52,227,160,.12)" : "transparent",
+              color: permanent ? "#fff" : "rgba(255,255,255,.6)",
+            }}
+          >
+            <span className="flex items-center gap-2">
+              <span className="text-[15px]">∞</span> Permanent
+            </span>
+            {subscribed ? (
+              <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-white/40">
+                {permanent ? "never expires" : "tap to pin forever"}
+              </span>
+            ) : (
+              <span className="rounded-full bg-sonar/20 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-sonar">
+                Subscribe
+              </span>
+            )}
+          </button>
+        )}
 
         {error && (
           <p className="mb-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-300">
@@ -265,7 +319,9 @@ export default function DropComposer({ onDrop, onClose }: Props) {
         >
           {uploading
             ? "Uploading…"
-            : `Drop · expires in ${lifespanLabel(lifespan)}`}
+            : permanent
+              ? "Drop · permanent ∞"
+              : `Drop · expires in ${lifespanLabel(lifespan)}`}
         </button>
       </div>
     </div>
