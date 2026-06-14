@@ -24,6 +24,10 @@ exports.handler = async (event) => {
   const connId = event.requestContext?.connectionId;
   if (!connId) return { statusCode: 400, body: "no connection id" };
 
+  // The $connect authorizer has already verified the session ticket; record the
+  // account so connections are attributable (and fan-out can be scoped later).
+  const account = event.requestContext?.authorizer?.sub || null;
+
   const raw = event.queryStringParameters?.channels;
   const channels = (raw ? raw.split(",") : ALL_CHANNELS)
     .map((c) => c.trim())
@@ -41,6 +45,7 @@ exports.handler = async (event) => {
         GSI1SK: `CH#${ch}`,
         connId,
         channel: ch,
+        account,
         connectedAt: now,
         ttl,
       },
