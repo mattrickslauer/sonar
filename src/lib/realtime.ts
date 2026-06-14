@@ -23,9 +23,39 @@ export function openRadarSocket(
   let retry: ReturnType<typeof setTimeout> | undefined;
   let backoff = 1000;
 
-  const connect = () => {
+  const scheduleRetry = () => {
     if (closed) return;
-    const url = `${WS_URL}?channels=${encodeURIComponent(channels.join(","))}`;
+    retry = setTimeout(connect, backoff);
+    backoff = Math.min(backoff * 2, 15000); // cap at 15s
+  };
+
+  const connect = async () => {
+    if (closed) return;
+
+    // Mint a fresh, short-lived connect ticket. The API Gateway WS authorizer
+    // requires it (?token=); an anonymous socket is rejected at the handshake.
+    let token: string;
+    try {
+      const res = await fetch("/api/realtime/ticket", {
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (res.status === 401) {
+        // Not signed in — there's nothing to retry to. Give up quietly.
+        console.warn("realtime: not authenticated — live updates disabled");
+        return;
+      }
+      if (!res.ok) throw new Error(`ticket ${res.status}`);
+      token = (await res.json()).token;
+    } catch {
+      scheduleRetry(); // transient (offline, server hiccup) — back off and retry
+      return;
+    }
+    if (closed) return;
+
+    const url =
+      `${WS_URL}?channels=${encodeURIComponent(channels.join(","))}` +
+      `&token=${encodeURIComponent(token)}`;
     ws = new WebSocket(url);
 
     ws.onopen = () => {
@@ -40,9 +70,7 @@ export function openRadarSocket(
       }
     };
     ws.onclose = () => {
-      if (closed) return;
-      retry = setTimeout(connect, backoff);
-      backoff = Math.min(backoff * 2, 15000); // cap at 15s
+      scheduleRetry();
     };
     ws.onerror = () => ws?.close();
   };

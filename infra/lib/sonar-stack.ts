@@ -10,6 +10,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as dsql from "aws-cdk-lib/aws-dsql";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import { WebSocketLambdaAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import * as cloudtrail from "aws-cdk-lib/aws-cloudtrail";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
@@ -291,10 +292,37 @@ export class SonarStack extends cdk.Stack {
     const wsDisconnect = makeFn("WsDisconnectFn", "ws-disconnect");
     table.grantReadWriteData(wsDisconnect); // queries GSI1, deletes, writes USAGE#
 
+    // $connect authorizer — verifies the session ticket the browser passes as
+    // `?token=` (see src/lib/server/session.ts createWsTicket + the
+    // /api/realtime/ticket route). Without it the WS feed is open to anyone.
+    // It signs/verifies with the same secret as the Next server, so the deploy
+    // environment must provide it. (Hackathon: env var → CFN template. For
+    // production, source this from Secrets Manager and grant the Lambda read.)
+    const sessionSecret = process.env.SONAR_SESSION_SECRET;
+    if (!sessionSecret || sessionSecret.length < 32) {
+      throw new Error(
+        "SONAR_SESSION_SECRET (>= 32 chars) must be set in the deploy environment " +
+          "so the WebSocket authorizer can verify session tickets. Use the SAME " +
+          "value as the Next/Vercel server (SONAR_SESSION_SECRET).",
+      );
+    }
+    const wsAuthorizerFn = makeFn("WsAuthorizerFn", "ws-authorizer", {
+      env: { SONAR_SESSION_SECRET: sessionSecret },
+    });
+    const wsAuthorizer = new WebSocketLambdaAuthorizer(
+      "WsAuthorizer",
+      wsAuthorizerFn,
+      {
+        authorizerName: "sonar-ws-session",
+        identitySource: ["route.request.querystring.token"],
+      },
+    );
+
     const wsApi = new apigwv2.WebSocketApi(this, "SonarWebSocketApi", {
       apiName: "sonar-ws",
       connectRouteOptions: {
         integration: new WebSocketLambdaIntegration("WsConnectInteg", wsConnect),
+        authorizer: wsAuthorizer,
       },
       disconnectRouteOptions: {
         integration: new WebSocketLambdaIntegration("WsDisconnectInteg", wsDisconnect),

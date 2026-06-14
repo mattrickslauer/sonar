@@ -17,6 +17,16 @@ const ISSUER = "sonar";
 const AUDIENCE = "sonar-web";
 const MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
+// WebSocket connect ticket. Browsers can't set headers on a WS handshake and
+// the httpOnly session cookie isn't sent cross-origin to the API Gateway WS
+// endpoint, so the client fetches a short-lived ticket (this audience) from an
+// authenticated route and passes it in the `?token=` query string. The WS
+// authorizer Lambda verifies it with the SAME secret. Keep the TTL tiny: the
+// ticket only has to survive the round-trip from /api/realtime/ticket to the
+// handshake, so a leaked URL is near-worthless.
+const WS_AUDIENCE = "sonar-ws";
+const WS_TICKET_TTL_SECONDS = 60;
+
 const secretValue = process.env.SONAR_SESSION_SECRET;
 let secretKey: Uint8Array | undefined;
 function key(): Uint8Array {
@@ -52,6 +62,25 @@ export async function createSessionToken(account: {
     .setAudience(AUDIENCE)
     .setIssuedAt()
     .setExpirationTime(`${MAX_AGE_SECONDS}s`)
+    .sign(key());
+}
+
+/**
+ * Mint a short-lived ticket the browser appends to the WebSocket URL as
+ * `?token=`. Same secret/issuer as the session, but a distinct audience and a
+ * 60s TTL so it can't be replayed as a session or reused beyond the handshake.
+ */
+export async function createWsTicket(account: {
+  id: string;
+  displayName: string;
+}): Promise<string> {
+  return new SignJWT({ name: account.displayName })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setSubject(account.id)
+    .setIssuer(ISSUER)
+    .setAudience(WS_AUDIENCE)
+    .setIssuedAt()
+    .setExpirationTime(`${WS_TICKET_TTL_SECONDS}s`)
     .sign(key());
 }
 
