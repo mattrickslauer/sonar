@@ -27,11 +27,13 @@ const MAX_SENDS = 5; // sends per code lifetime
 
 const pepper = process.env.SONAR_SESSION_SECRET ?? "";
 
-function normalizeEmail(email: string): string {
+// Exported for unit tests (the crypto contract is security-critical). Not part
+// of the route-facing API.
+export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-function hashCode(email: string, code: string): string {
+export function hashCode(email: string, code: string): string {
   // Bind the hash to the email so a code is only valid for its address.
   return createHmac("sha256", pepper).update(`${email}:${code}`).digest("hex");
 }
