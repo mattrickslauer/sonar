@@ -133,7 +133,11 @@ export class SonarStack extends cdk.Stack {
             "https://mysonar.zone",
             "https://www.mysonar.zone",
             "https://sonar-bay.vercel.app", // legacy Vercel host (kept during cutover)
+            // Local dev: Next falls back to 3001/3002 when 3000 is taken, so allow
+            // the common range or the presigned media upload fails CORS.
             "http://localhost:3000",
+            "http://localhost:3001",
+            "http://localhost:3002",
           ],
           exposedHeaders: ["ETag"],
           maxAge: 3600,
