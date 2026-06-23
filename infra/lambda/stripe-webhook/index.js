@@ -33,6 +33,8 @@ const {
   DynamoDBDocumentClient,
   QueryCommand,
   UpdateCommand,
+  PutCommand,
+  DeleteCommand,
 } = require("@aws-sdk/lib-dynamodb");
 
 const REGION = process.env.AWS_REGION || "us-east-1";
@@ -135,6 +137,103 @@ const UPDATE_BY_CUSTOMER = `
    WHERE stripe_customer_id = $1
 `;
 
+// --- Locked private channels (metadata.kind === "channel") ---------------
+// A locked channel is a DISTINCT metered subscription, billed per member-hour.
+// These rows live in channel_billing / channels / channel_members — NEVER the
+// per-account `subscriptions` table, so a channel event must not reach the
+// permanent-waypoint path (which would corrupt that row / expire its pins).
+
+// Idempotent per-channel billing upsert (channel_id PK). Distinct $-placeholders.
+const UPSERT_CHANNEL_BILLING = `
+  INSERT INTO channel_billing
+    (channel_id, owner_account_id, stripe_customer_id, stripe_subscription_id,
+     subscription_item_id, price_id, status, current_period_end, updated_at)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+  ON CONFLICT (channel_id) DO UPDATE SET
+    owner_account_id       = $9,
+    stripe_customer_id     = $10,
+    stripe_subscription_id = $11,
+    subscription_item_id   = $12,
+    price_id               = $13,
+    status                 = $14,
+    current_period_end     = $15,
+    updated_at             = now()
+`;
+
+/** Seed the owner as a channel member in DynamoDB (the WS authorizer's cache). */
+async function putMemberCache(channelId, accountId, role) {
+  if (!TABLE_NAME) return;
+  await ddb.send(new PutCommand({
+    TableName: TABLE_NAME,
+    Item: {
+      PK: `CH#${channelId}`,
+      SK: `MEMBER#${accountId}`,
+      GSI1PK: `USER#${accountId}`,
+      GSI1SK: `CHMEMBER#${channelId}`,
+      channelId,
+      accountId,
+      role,
+      createdAt: Date.now(),
+    },
+  }));
+}
+
+/**
+ * Handle a customer.subscription.* event for a LOCKED channel. created/updated
+ * mirror billing state and (when active) activate the channel + seed the owner
+ * as a member; deleted runs the unlock cascade (expire channel, drop members +
+ * their cache rows). Keyed by metadata.channel_id / metadata.account_id.
+ */
+async function handleChannelSubscription(client, sub, type) {
+  const channelId = sub.metadata && sub.metadata.channel_id;
+  const accountId = sub.metadata && sub.metadata.account_id;
+  if (!channelId || !accountId) {
+    console.error("channel subscription event missing channel_id/account_id metadata");
+    return;
+  }
+  const customerId = asId(sub.customer);
+  const item = sub.items && sub.items.data && sub.items.data[0];
+  const subscriptionItemId = item ? item.id : null;
+  const priceId = item && item.price ? item.price.id : null;
+  const pEnd = toIso(periodEnd(sub));
+  const deleted = type === "customer.subscription.deleted";
+  const status = deleted ? "canceled" : sub.status;
+
+  await client.query(UPSERT_CHANNEL_BILLING, [
+    channelId, accountId, customerId, sub.id, subscriptionItemId, priceId, status, pEnd,
+    accountId, customerId, sub.id, subscriptionItemId, priceId, status, pEnd,
+  ]);
+
+  if (deleted) {
+    // Unlock cascade: expire the channel, then drop every member (DSQL + cache).
+    await client.query(`UPDATE channels SET status = 'expired' WHERE id = $1`, [channelId]);
+    const members = await client.query(
+      `SELECT account_id FROM channel_members WHERE channel_id = $1`,
+      [channelId],
+    );
+    await client.query(`DELETE FROM channel_members WHERE channel_id = $1`, [channelId]);
+    await Promise.all((members.rows || []).map((m) =>
+      ddb.send(new DeleteCommand({
+        TableName: TABLE_NAME,
+        Key: { PK: `CH#${channelId}`, SK: `MEMBER#${m.account_id}` },
+      })).catch(() => {}),
+    ));
+    return;
+  }
+
+  // Active/trialing → channel becomes usable and the owner is seeded as a member.
+  if (status === "active" || status === "trialing") {
+    await client.query(`UPDATE channels SET status = 'active' WHERE id = $1`, [channelId]);
+    await client.query(
+      `INSERT INTO channel_members (channel_id, account_id, role)
+         VALUES ($1, $2, 'owner')
+         ON CONFLICT (channel_id, account_id) DO UPDATE SET role = 'owner'`,
+      [channelId, accountId],
+    );
+    await putMemberCache(channelId, accountId, "owner");
+  }
+}
+
 /** Flip the pending pin (PK/SK from subscription metadata) to permanent. */
 async function promotePending(pk, sk) {
   if (!pk || !sk || !TABLE_NAME) return;
@@ -234,6 +333,15 @@ exports.handler = async (event) => {
       case "customer.subscription.updated":
       case "customer.subscription.deleted": {
         const sub = stripeEvent.data.object;
+        // Discriminator (LOAD-BEARING): a locked-channel subscription is handled
+        // entirely by its own tables. Routing it through the permanent-waypoint
+        // path below would corrupt the per-account subscriptions row and, on
+        // delete, expire the owner's permanent pins.
+        if (sub.metadata && sub.metadata.kind === "channel") {
+          client = client || (await dsqlConnect());
+          await handleChannelSubscription(client, sub, stripeEvent.type);
+          break;
+        }
         const customerId = asId(sub.customer);
         if (!customerId) break;
         const accountId = sub.metadata && sub.metadata.account_id;

@@ -2,10 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { CHANNELS, CHANNEL_MAP, ChannelId } from "@/lib/channels";
+import { CHANNELS, channelMeta, Channel, ChannelId } from "@/lib/channels";
+import { fetchChannels, createOrJoinChannel } from "@/lib/channels.client";
 import { LngLat, distance, formatDistance } from "@/lib/geo";
 import {
-  fetchWaypoints,
+  fetchRadar,
   fetchLoves,
   postDrop,
   postLove,
@@ -14,6 +15,7 @@ import {
   rawToWaypoint,
   MediaKind,
   Waypoint,
+  TagZone,
   SHARE_WAYPOINT_PARAM,
   SHARE_REFERRER_PARAM,
   SHARE_POS_PARAM,
@@ -34,6 +36,7 @@ import { DEFAULT_RANGE, RANGE_MAP, RangeMode } from "@/lib/range";
 import TopBar from "@/components/TopBar";
 import RangeSelector from "@/components/RangeSelector";
 import ChannelDock from "@/components/ChannelDock";
+import TagZoneBar from "@/components/TagZoneBar";
 import AskBar from "@/components/AskBar";
 import WaypointSheet from "@/components/WaypointSheet";
 import ClusterSheet from "@/components/ClusterSheet";
@@ -62,6 +65,13 @@ export default function Home() {
   const [locationError, setLocationError] = useState<LocationError>(null);
   const [locateAttempt, setLocateAttempt] = useState(0);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+  // The open channel set (public + private the user belongs to). Seeded with the
+  // static core for first paint, then replaced by the live registry.
+  const [channels, setChannels] = useState<Channel[]>(CHANNELS);
+  // Live tag zones near the user (TTL-backed); drives the "trending" bar.
+  const [tagZones, setTagZones] = useState<TagZone[]>([]);
+  // Tags currently filtering the radar (empty = no tag filter).
+  const [activeTags, setActiveTags] = useState<Set<string>>(() => new Set());
   const [visible, setVisible] = useState<Set<ChannelId>>(
     () => new Set(CHANNELS.map((c) => c.id))
   );
@@ -103,6 +113,42 @@ export default function Home() {
     fetchMe().then(setAccount);
   }, []);
 
+  // Load the open channel registry (public + private the user belongs to).
+  // Re-runs when identity changes (signing in can reveal private channels).
+  // Newly seen channels become visible once; later manual toggles are respected.
+  const seenChannelsRef = useRef<Set<string>>(new Set(CHANNELS.map((c) => c.id)));
+  function loadChannels() {
+    if (!userId) return;
+    fetchChannels(userId)
+      .then((list) => {
+        if (!list.length) return;
+        setChannels(list);
+        setVisible((prev) => {
+          const next = new Set(prev);
+          for (const c of list) {
+            if (!seenChannelsRef.current.has(c.id)) {
+              next.add(c.id);
+              seenChannelsRef.current.add(c.id);
+            }
+          }
+          return next;
+        });
+      })
+      .catch((e) => console.error("fetchChannels", e));
+  }
+  useEffect(() => {
+    loadChannels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, account]);
+
+  const channelsById = useMemo(
+    () => new Map(channels.map((c) => [c.id, c])),
+    [channels],
+  );
+  const channelIds = useMemo(() => channels.map((c) => c.id), [channels]);
+  // Stable string key so the fetch/socket effects re-run only when the set changes.
+  const channelKey = channelIds.join(",");
+
   // Resolve whether billing is configured (shows the "Permanent · $5/mo" option).
   useEffect(() => {
     fetchPermanentConsole().then((c) => setBillingConfigured(c.configured));
@@ -133,6 +179,27 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Returning from a locked-channel Checkout (`?locked=success&channel=…`): the
+  // webhook activates the channel + seeds owner membership asynchronously, so
+  // re-poll the channel list a few times to pick it up, then clean the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const locked = params.get("locked");
+    if (!locked) return;
+    params.delete("locked");
+    params.delete("channel");
+    const qs = params.toString();
+    window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
+    if (locked !== "success") return;
+    let tries = 0;
+    const poll = () => {
+      loadChannels();
+      if (++tries < 5) setTimeout(poll, 1500);
+    };
+    setTimeout(poll, 1200);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Honor an inbound share link. The link carries the waypoint id, its location
   // (`ll=lat,lng`) and channel (`c`), plus the referrer (`r`). We set it as the
   // "share target": until the user is in range it shows as a directional beacon
@@ -154,7 +221,7 @@ export default function Home() {
       const [latS, lngS] = (ll ?? "").split(",");
       const lat = Number(latS);
       const lng = Number(lngS);
-      const channel = (c && c in CHANNEL_MAP ? c : "social") as ChannelId;
+      const channel = (c || "social") as ChannelId;
       if (Number.isFinite(lat) && Number.isFinite(lng)) {
         // Located link → guide the user to it (beacon until in range).
         setShareTarget({ id: wp, pos: { lat, lng }, channel });
@@ -234,13 +301,18 @@ export default function Home() {
   useEffect(() => {
     if (!center) return;
     let active = true;
-    fetchWaypoints(center, undefined, radiusMeters)
-      .then((w) => active && setWaypoints(w))
-      .catch((e) => console.error("load waypoints", e));
+    const ids = channelKey ? channelKey.split(",") : undefined;
+    fetchRadar(center, ids, radiusMeters, userId || undefined)
+      .then(({ waypoints: w, tagZones: z }) => {
+        if (!active) return;
+        setWaypoints(w);
+        setTagZones(z);
+      })
+      .catch((e) => console.error("load radar", e));
     return () => {
       active = false;
     };
-  }, [center, radiusMeters]);
+  }, [center, radiusMeters, channelKey, userId]);
 
   // Reverse-geocode the user's location for the top-bar label (anywhere on Earth).
   useEffect(() => {
@@ -294,9 +366,10 @@ export default function Home() {
   }, [userId, waypoints]);
 
   // Live feed: merge pushed waypoints (deduped by id, which drops our own echo).
+  // Re-subscribes when the channel set changes (e.g. after joining a private one).
   useEffect(() => {
-    const channelIds = CHANNELS.map((c) => c.id);
-    return openRadarSocket(channelIds, (raw) => {
+    const ids = channelKey ? channelKey.split(",") : CHANNELS.map((c) => c.id);
+    return openRadarSocket(ids, (raw) => {
       const c = centerRef.current;
       if (!c) return; // ignore pushes until we know where the user is
       setWaypoints((prev) =>
@@ -305,23 +378,27 @@ export default function Home() {
           : [rawToWaypoint(raw, c), ...prev]
       );
     });
-  }, []);
+  }, [channelKey]);
 
   const counts = useMemo(() => {
-    const c = Object.fromEntries(CHANNELS.map((ch) => [ch.id, 0])) as Record<
-      ChannelId,
-      number
-    >;
-    for (const w of waypoints) c[w.channel]++;
+    const c: Record<string, number> = {};
+    for (const ch of channels) c[ch.id] = 0;
+    for (const w of waypoints) c[w.channel] = (c[w.channel] ?? 0) + 1;
     return c;
-  }, [waypoints]);
+  }, [waypoints, channels]);
 
   // Clip to the channel toggles *and* the travel-mode range, so the map agrees
   // with the radar ring no matter the source (fetch, live push, optimistic drop)
   // and reacts instantly when the range narrows — no refetch needed.
   const visibleWaypoints = useMemo(
-    () => waypoints.filter((w) => visible.has(w.channel) && w.meters <= radiusMeters),
-    [waypoints, visible, radiusMeters]
+    () =>
+      waypoints.filter(
+        (w) =>
+          visible.has(w.channel) &&
+          w.meters <= radiusMeters &&
+          (activeTags.size === 0 || (w.tags?.some((t) => activeTags.has(t)) ?? false)),
+      ),
+    [waypoints, visible, radiusMeters, activeTags]
   );
 
   const selected = useMemo(
@@ -348,6 +425,38 @@ export default function Home() {
       else next.add(id);
       return next;
     });
+  }
+
+  function toggleTag(tag: string) {
+    setActiveTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag);
+      else next.add(tag);
+      return next;
+    });
+  }
+
+  // Search-or-create a channel. Public channels join/create instantly; a locked
+  // (private) channel redirects to Stripe Checkout and is usable after payment.
+  async function createChannel(name: string, isPrivate: boolean) {
+    if (isPrivate && !account) {
+      handleRequireSignIn();
+      return;
+    }
+    try {
+      const res = await createOrJoinChannel({ name, isPrivate, anonId: userId });
+      if (res.url) {
+        window.location.assign(res.url); // locked channel → Checkout
+        return;
+      }
+      const ch = res.channel;
+      setChannels((prev) => (prev.some((c) => c.id === ch.id) ? prev : [...prev, ch]));
+      seenChannelsRef.current.add(ch.id);
+      setVisible((prev) => new Set(prev).add(ch.id));
+    } catch (e) {
+      console.error("createChannel", e);
+      alert(e instanceof Error ? e.message : "could not create channel");
+    }
   }
 
   function love(id: string) {
@@ -419,13 +528,17 @@ export default function Home() {
     setSelectedId((cur) => (cur === id ? null : cur));
   }
 
-  // Refetch nearby waypoints (after a checkout return or a console edit/delete).
+  // Refetch nearby waypoints + tag zones (after a checkout return or edit/delete).
   function reloadWaypoints() {
     const c = centerRef.current;
     if (!c) return;
-    fetchWaypoints(c, undefined, radiusMeters)
-      .then(setWaypoints)
-      .catch((e) => console.error("reload waypoints", e));
+    const ids = channelKey ? channelKey.split(",") : undefined;
+    fetchRadar(c, ids, radiusMeters, userId || undefined)
+      .then(({ waypoints: w, tagZones: z }) => {
+        setWaypoints(w);
+        setTagZones(z);
+      })
+      .catch((e) => console.error("reload radar", e));
   }
 
   function drop(
@@ -434,7 +547,8 @@ export default function Home() {
     text: string,
     lifespanSeconds: number,
     permanent: boolean,
-    mediaKey?: string,
+    mediaKey: string | undefined,
+    tags: string[],
   ) {
     if (!center) return; // can't drop without a location
     if (permanent) {
@@ -460,6 +574,7 @@ export default function Home() {
       expiresAt,
       lifespanMs: Math.max(1, expiresAt - now),
       mediaKey,
+      tags: tags.length ? tags : undefined,
     };
     setWaypoints((prev) => [optimistic, ...prev]);
     setVisible((prev) => new Set(prev).add(channel));
@@ -476,6 +591,7 @@ export default function Home() {
       lifespanSeconds,
       mediaKey,
       ref: loadReferrer() ?? undefined,
+      tags,
     })
       .then((saved) => {
         setWaypoints((prev) => prev.map((w) => (w.id === optimistic.id ? saved : w)));
@@ -598,7 +714,14 @@ export default function Home() {
             </button>
           </div>
 
-            <ChannelDock active={visible} counts={counts} onToggle={toggleChannel} />
+            <TagZoneBar zones={tagZones} active={activeTags} onToggle={toggleTag} />
+            <ChannelDock
+              channels={channels}
+              active={visible}
+              counts={counts}
+              onToggle={toggleChannel}
+              onCreateChannel={createChannel}
+            />
             <AskBar waypoints={visibleWaypoints} place={placeLabel} />
           </div>
         </div>
@@ -615,7 +738,7 @@ export default function Home() {
                 </p>
                 <p
                   className="font-mono text-[11px]"
-                  style={{ color: CHANNEL_MAP[shareTarget.channel].color }}
+                  style={{ color: channelMeta(shareTarget.channel, channelsById).color }}
                 >
                   {formatDistance(distance(center, shareTarget.pos))} away · follow the rainbow to unlock
                 </p>
@@ -636,6 +759,10 @@ export default function Home() {
               setSelectedId(null);
               setManageOpen(true);
             }}
+            onTagClick={(tag) => {
+              setSelectedId(null);
+              setActiveTags(new Set([tag]));
+            }}
           />
         )}
 
@@ -652,6 +779,7 @@ export default function Home() {
 
         {composerOpen && (
           <DropComposer
+            channels={channels}
             onDrop={drop}
             onClose={() => setComposerOpen(false)}
             billingConfigured={billingConfigured}

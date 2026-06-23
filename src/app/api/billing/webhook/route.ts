@@ -9,6 +9,8 @@ import {
   promoteWaypointToPermanent,
   expireOwnedPermanent,
 } from "@/lib/server/waypoints";
+import { upsertChannelBilling, setChannelStatus } from "@/lib/server/channels";
+import { addMember, removeAllMembers } from "@/lib/server/membership";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,6 +47,10 @@ export async function POST(request: Request) {
         if (!subscriptionId) break;
         // Retrieve the subscription for authoritative status/quantity/metadata.
         const sub = await stripe().subscriptions.retrieve(subscriptionId);
+        if (sub.metadata?.kind === "channel") {
+          await handleChannelSubscription(sub, false);
+          break;
+        }
         await syncSubscription(sub);
         await promoteFromMetadata(sub);
         break;
@@ -53,6 +59,10 @@ export async function POST(request: Request) {
       case "customer.subscription.created":
       case "customer.subscription.updated": {
         const sub = event.data.object as Stripe.Subscription;
+        if (sub.metadata?.kind === "channel") {
+          await handleChannelSubscription(sub, false);
+          break;
+        }
         await syncSubscription(sub);
         await promoteFromMetadata(sub);
         break;
@@ -60,6 +70,10 @@ export async function POST(request: Request) {
 
       case "customer.subscription.deleted": {
         const sub = event.data.object as Stripe.Subscription;
+        if (sub.metadata?.kind === "channel") {
+          await handleChannelSubscription(sub, true);
+          break;
+        }
         const customerId = asId(sub.customer);
         const accountId = sub.metadata?.account_id ?? null;
         if (accountId) {
@@ -108,6 +122,41 @@ async function syncSubscription(sub: Stripe.Subscription): Promise<void> {
     });
   } else if (customerId) {
     await updateSubscriptionStatusByCustomer(customerId, sub.status, sub.id, periodEnd(sub), quantity);
+  }
+}
+
+/**
+ * Locked-channel subscription (metadata.kind === "channel"): mirror billing,
+ * and on activate seed the owner / on delete run the unlock cascade. Kept
+ * entirely off the per-account `subscriptions` path. Mirrors the prod Lambda.
+ */
+async function handleChannelSubscription(
+  sub: Stripe.Subscription,
+  deleted: boolean,
+): Promise<void> {
+  const channelId = sub.metadata?.channel_id;
+  const accountId = sub.metadata?.account_id;
+  if (!channelId || !accountId) return;
+  const item = sub.items.data[0];
+  const status = deleted ? "canceled" : sub.status;
+  await upsertChannelBilling({
+    channelId,
+    ownerAccountId: accountId,
+    stripeCustomerId: asId(sub.customer) ?? "",
+    stripeSubscriptionId: sub.id,
+    subscriptionItemId: item?.id ?? null,
+    priceId: item?.price?.id ?? null,
+    status,
+    currentPeriodEnd: periodEnd(sub),
+  });
+  if (deleted) {
+    await setChannelStatus(channelId, "expired");
+    await removeAllMembers(channelId);
+    return;
+  }
+  if (status === "active" || status === "trialing") {
+    await setChannelStatus(channelId, "active");
+    await addMember(channelId, accountId, "owner");
   }
 }
 

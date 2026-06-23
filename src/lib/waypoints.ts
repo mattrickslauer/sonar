@@ -21,6 +21,22 @@ export interface Waypoint {
   lifespanMs: number; // total chosen lifespan; drives the countdown ring
   mediaKey?: string; // S3 object key for photo/video/voice drops
   mediaUrl?: string; // /api/media/view URL to render the blob (presigned on hit)
+  tags?: string[]; // ephemeral, location-scoped tags carried on the drop
+}
+
+/**
+ * A live "tag zone": an aggregate of how often a tag has been used recently in a
+ * geohash cell for a channel. Glows on the radar while tagging is happening and
+ * fades via DynamoDB TTL when it stops. Positioned at the dominant cell centroid.
+ */
+export interface TagZone {
+  tag: string;
+  channel: ChannelId;
+  count: number;
+  pos: LngLat;
+  bearing: number; // for radar layout, relative to the requesting center
+  meters: number;
+  expiresAt: number; // epoch ms; the dominant cell's ttl (drives the fade)
 }
 
 /** The /api/media/view URL that 307s to a presigned GET for this object. */
@@ -165,6 +181,32 @@ export async function fetchWaypoints(
   return data.waypoints as Waypoint[];
 }
 
+/** Fetch waypoints AND live tag zones near a center in one round trip
+ *  (`?tags=1`). Same cell fan-out serves both, so the radar gets pins and
+ *  glowing tags without a second request. */
+export async function fetchRadar(
+  center: LngLat,
+  channels?: ChannelId[],
+  radiusMeters?: number,
+  anonId?: string,
+): Promise<{ waypoints: Waypoint[]; tagZones: TagZone[] }> {
+  const params = new URLSearchParams({
+    lat: String(center.lat),
+    lng: String(center.lng),
+    tags: "1",
+  });
+  if (channels) params.set("channels", channels.join(","));
+  if (radiusMeters) params.set("radius", String(Math.round(radiusMeters)));
+  if (anonId) params.set("anonId", anonId);
+  const res = await fetch(`/api/waypoints?${params}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`fetchRadar failed: ${res.status}`);
+  const data = await res.json();
+  return {
+    waypoints: (data.waypoints ?? []) as Waypoint[],
+    tagZones: (data.tagZones ?? []) as TagZone[],
+  };
+}
+
 /** Persist a drop at `center` and return the saved waypoint. The display author
  *  is derived server-side from the resolved identity (session or anon account);
  *  the client only supplies `anonId` for the unauthenticated case. */
@@ -181,6 +223,8 @@ export async function postDrop(input: {
   permanent?: boolean;
   /** Referrer username from an inbound shared link — for set-once attribution. */
   ref?: string;
+  /** Ephemeral, location-scoped tags to carry on the drop (also bump tag zones). */
+  tags?: string[];
 }): Promise<Waypoint> {
   const res = await fetch("/api/waypoints", {
     method: "POST",
@@ -196,6 +240,7 @@ export async function postDrop(input: {
       mediaKey: input.mediaKey,
       permanent: input.permanent,
       ref: input.ref,
+      tags: input.tags,
     }),
   });
   if (!res.ok) {
@@ -264,6 +309,7 @@ export interface RawWaypoint {
   sponsor?: string;
   actorType?: string;
   mediaKey?: string;
+  tags?: string[];
 }
 
 /** A pushed RawWaypoint → the Waypoint shape, with layout relative to `center`. */
@@ -289,6 +335,7 @@ export function rawToWaypoint(raw: RawWaypoint, center: LngLat): Waypoint {
     lifespanMs: Math.max(1, expiresAt - raw.createdAt),
     mediaKey: raw.mediaKey,
     mediaUrl: raw.mediaKey ? mediaViewUrl(raw.mediaKey) : undefined,
+    tags: Array.isArray(raw.tags) ? raw.tags : undefined,
   };
 }
 

@@ -12,8 +12,8 @@ import {
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { CHANNELS, ChannelId } from "@/lib/channels";
 import { LngLat, distance, bearing } from "@/lib/geo";
-import { Waypoint, MediaKind, mediaViewUrl } from "@/lib/waypoints";
-import { cellAndNeighbors, encodeGeohash } from "@/lib/geohash";
+import { Waypoint, TagZone, MediaKind, mediaViewUrl } from "@/lib/waypoints";
+import { cellAndNeighbors, encodeGeohash, decodeGeohash } from "@/lib/geohash";
 
 // Use SONAR_-prefixed config, NOT the bare AWS_* names: on Vercel the functions
 // run on AWS Lambda, which injects its own AWS_REGION and (Vercel-account)
@@ -31,6 +31,10 @@ const LOVE_EXTENSION_SECONDS = 5 * 60;
 // Sponsored (paid) waypoints are permanent: a far-future ttl so DynamoDB TTL
 // never deletes them, and the +5min love bump stays a harmless no-op.
 const PERMANENT_TTL_SECONDS = Math.floor(new Date("2999-01-01T00:00:00Z").getTime() / 1000);
+// Tag zones are deliberately MORE transient than the 24h waypoints — a zone
+// represents "tagging happening here right now". A fresh tagged drop refreshes
+// the zone to a full window; when tagging stops the zone fades within 30 min.
+const ZONE_TTL_SECONDS = 30 * 60;
 
 const accessKeyId = process.env.SONAR_AWS_ACCESS_KEY_ID;
 const secretAccessKey = process.env.SONAR_AWS_SECRET_ACCESS_KEY;
@@ -86,6 +90,7 @@ function toWaypoint(it: Record<string, unknown>, center: LngLat, now: number): W
     lifespanMs: Math.max(1, expiresAt - createdAt),
     mediaKey,
     mediaUrl: mediaKey ? mediaViewUrl(mediaKey) : undefined,
+    tags: Array.isArray(it.tags) ? (it.tags as string[]) : undefined,
   };
 }
 
@@ -141,6 +146,9 @@ export interface DropInput {
   sponsored?: boolean;
   /** Sponsor/brand label, shown on the pin. Only meaningful when sponsored. */
   sponsor?: string;
+  /** Normalized ephemeral tags (see src/lib/tags.ts). Stored on the item AND
+   *  bumped as tag zones. Already normalized by the caller. */
+  tags?: string[];
 }
 
 // Author-chosen lifespan bounds. Capped at 24h to keep the feed ephemeral.
@@ -188,13 +196,123 @@ export async function putWaypoint(input: DropInput): Promise<Waypoint> {
     // Undefined is stripped by removeUndefinedValues (non-sponsored / text drops).
     sponsor: input.sponsored ? input.sponsor : undefined,
     mediaKey: input.mediaKey,
+    // Empty array → undefined so removeUndefinedValues drops it (no empty list).
+    tags: input.tags && input.tags.length ? input.tags : undefined,
   };
   await ddb.send(new PutCommand({
     TableName: TABLE,
     Item: item,
     ConditionExpression: "attribute_not_exists(PK)",
   }));
+  // Bump the tag zones this drop belongs to — non-fatal: a zone failure must
+  // never fail the drop (eventual liveness is fine).
+  if (input.tags && input.tags.length) {
+    await bumpTagZones(input.channel, gh6, input.tags, now).catch((err) =>
+      console.error("bumpTagZones failed", err),
+    );
+  }
   return toWaypoint(item, { lat: input.lat, lng: input.lng }, now);
+}
+
+/**
+ * Upsert a tag zone per tag for a drop: a TAGZONE#<channel>#GEO#<gh6> / TAG#<tag>
+ * item whose `count` increments and whose `ttl` is RESET to a fresh window on
+ * every reuse — the same TTL-as-liveness mechanic loveWaypoint uses to keep a
+ * waypoint alive (+5min per like), tuned shorter so a zone fades ~30 min after
+ * tagging stops. First use creates the item (upsert-by-default, no condition).
+ */
+async function bumpTagZones(
+  channel: string,
+  gh6: string,
+  tags: string[],
+  now: number,
+): Promise<void> {
+  const ttl = Math.floor(now / 1000) + ZONE_TTL_SECONDS;
+  await Promise.all(
+    tags.map((tag) =>
+      ddb.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { PK: `TAGZONE#${channel}#GEO#${gh6}`, SK: `TAG#${tag}` },
+        UpdateExpression:
+          "ADD #c :one SET #ttl = :ttl, lastSeenAt = :now, channel = :ch, tag = :tag, gh6 = :gh",
+        ExpressionAttributeNames: { "#c": "count", "#ttl": "ttl" },
+        ExpressionAttributeValues: {
+          ":one": 1,
+          ":ttl": ttl,
+          ":now": now,
+          ":ch": channel,
+          ":tag": tag,
+          ":gh": gh6,
+        },
+      })),
+    ),
+  );
+}
+
+/**
+ * Live tag zones near a center: same cell-and-neighbors fan-out as queryNearby,
+ * but scanning the TAGZONE# partitions. The same tag can occupy several adjacent
+ * cells (a crowd straddling a ~1.2km gh6 boundary), so we MERGE same-(channel,tag)
+ * items across the queried cells — summing counts, taking the dominant cell's
+ * centroid as the position. Distant duplicates (different neighborhoods) are
+ * never queried together, so they correctly stay separate zones. TTL deletes
+ * lazily, so we defensively drop any item already past its ttl.
+ */
+export async function queryTagZones(
+  center: LngLat,
+  channels: ChannelId[] = CHANNELS.map((c) => c.id),
+  radiusMeters?: number,
+): Promise<TagZone[]> {
+  const cells = cellAndNeighbors(center.lat, center.lng, 6);
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const queries = channels.flatMap((ch) =>
+    cells.map((cell) =>
+      ddb.send(new QueryCommand({
+        TableName: TABLE,
+        KeyConditionExpression: "PK = :pk AND begins_with(SK, :t)",
+        ExpressionAttributeValues: { ":pk": `TAGZONE#${ch}#GEO#${cell}`, ":t": "TAG#" },
+      })),
+    ),
+  );
+  const items = (await Promise.all(queries))
+    .flatMap((r) => r.Items ?? [])
+    .filter((it) => Number(it.ttl ?? 0) > nowSec); // drop lazily-expired zones
+
+  // Merge by (channel, tag); keep the dominant (highest-count) cell's position.
+  const merged = new Map<string, { channel: string; tag: string; count: number; gh6: string; bestCount: number; ttl: number }>();
+  for (const it of items) {
+    const channel = String(it.channel);
+    const tag = String(it.tag);
+    const count = Number(it.count ?? 0);
+    const gh6 = String(it.gh6 ?? "");
+    const ttl = Number(it.ttl ?? 0);
+    const key = `${channel} ${tag}`;
+    const prev = merged.get(key);
+    if (!prev) {
+      merged.set(key, { channel, tag, count, gh6, bestCount: count, ttl });
+    } else {
+      prev.count += count;
+      if (count > prev.bestCount) { prev.bestCount = count; prev.gh6 = gh6; }
+      prev.ttl = Math.max(prev.ttl, ttl);
+    }
+  }
+
+  return [...merged.values()]
+    .map((z) => {
+      const pos = decodeGeohash(z.gh6);
+      return {
+        tag: z.tag,
+        channel: z.channel as ChannelId,
+        count: z.count,
+        pos,
+        bearing: bearing(center, pos),
+        meters: distance(center, pos),
+        expiresAt: z.ttl * 1000,
+      } satisfies TagZone;
+    })
+    .filter((z) => radiusMeters == null || z.meters <= radiusMeters)
+    .sort((a, b) => b.count - a.count); // hottest first
 }
 
 // ---------------------------------------------------------------------------
