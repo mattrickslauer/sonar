@@ -27,15 +27,27 @@ async function accessibleChannels(
   for (const raw of requested) {
     const id = normalizeChannelSlug(raw);
     if (!id) continue;
-    const row = known.get(id);
-    const isCore = CORE_CHANNEL_IDS.includes(id);
-    if (!row && !isCore) continue; // unknown channel → silently drop
-    if (row?.isPrivate) {
-      // Private: include only if the caller is a member (defense-in-depth; the
-      // client should only request private channels it belongs to).
-      if (accountId && (await isMember(id, accountId))) out.push(id);
-    } else {
+    // Core channels are always public — the legacy "safety" lock is cosmetic and
+    // was never enforced, so it must NOT trigger a membership check.
+    if (CORE_CHANNEL_IDS.includes(id)) {
       out.push(id);
+      continue;
+    }
+    const row = known.get(id);
+    if (!row) continue; // unknown channel → silently drop
+    if (!row.isPrivate) {
+      out.push(id);
+      continue;
+    }
+    // Private: include only if the caller is a member (defense-in-depth; the
+    // client should only request private channels it belongs to). A membership-
+    // store error (e.g. before migrations) drops the channel rather than 500ing
+    // the whole radar read.
+    if (!accountId) continue;
+    try {
+      if (await isMember(id, accountId)) out.push(id);
+    } catch (err) {
+      console.error("membership check failed; dropping private channel", id, err);
     }
   }
   return out;
@@ -142,11 +154,14 @@ export async function POST(request: Request) {
     throw err;
   }
 
-  // Private channels are post-gated on membership (DSQL authoritative).
-  const known = await getChannelsCached();
-  if (known.get(channel)?.isPrivate) {
-    if (!(await isMember(channel, identity.userId))) {
-      return Response.json({ error: "not a member of this channel" }, { status: 403 });
+  // Private channels are post-gated on membership (DSQL authoritative). Core
+  // channels are always public — never gated (the "safety" lock is cosmetic).
+  if (!CORE_CHANNEL_IDS.includes(channel)) {
+    const known = await getChannelsCached();
+    if (known.get(channel)?.isPrivate) {
+      if (!(await isMember(channel, identity.userId))) {
+        return Response.json({ error: "not a member of this channel" }, { status: 403 });
+      }
     }
   }
 

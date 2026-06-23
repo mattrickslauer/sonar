@@ -73,8 +73,12 @@ export async function GET(request: Request) {
     }
     return Response.json({ channels: [...pub, ...mine].map(toClient) });
   } catch (err) {
-    console.error("GET /api/channels failed", err);
-    return Response.json({ error: "channel list failed" }, { status: 500 });
+    // Degrade gracefully (e.g. registry not migrated yet) so the radar keeps
+    // working with the static core channels rather than hard-failing.
+    console.error("GET /api/channels failed; falling back to static core", err);
+    return Response.json({
+      channels: CHANNELS.map((c) => ({ ...c, private: !!c.private })),
+    });
   }
 }
 

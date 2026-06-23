@@ -64,13 +64,17 @@ export async function getChannel(id: string): Promise<ChannelRow | null> {
   return res.rows[0] ?? null;
 }
 
-/** All public channels (the discoverable set). Private channels are unlisted —
- *  they surface only via listMyChannels (membership). */
+/** All public channels (the discoverable set), PLUS the always-visible core
+ *  channels regardless of their privacy flag — `safety` is seeded private only
+ *  to keep its cosmetic lock icon, but it must still appear in the dock (its
+ *  membership is never enforced; see accessibleChannels). User-created private
+ *  channels remain unlisted and surface only via membership. */
 export async function listPublicChannels(): Promise<ChannelRow[]> {
   const res = await query<ChannelRow>(
     `SELECT ${SELECT_COLS} FROM channels
-       WHERE is_private = false AND status = 'active'
+       WHERE (is_private = false OR id = ANY($1)) AND status = 'active'
        ORDER BY created_at`,
+    [CORE_CHANNEL_IDS],
   );
   return res.rows;
 }
