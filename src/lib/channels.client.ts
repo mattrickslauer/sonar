@@ -2,6 +2,34 @@
 // objects shaped like the Channel interface ({ id, label, emoji, color, private }).
 import { Channel } from "@/lib/channels";
 
+const VISIBLE_KEY = "sonar_channels";
+
+/**
+ * The channels the user has toggled on, persisted across sessions. There is no
+ * default set — Sonar starts with an empty bar and the dock surfaces channels
+ * with live activity in the area as off-by-default suggestions the user opts in
+ * to. The result is the user's saved selection only.
+ */
+export function loadVisibleChannels(): string[] {
+  try {
+    const raw = localStorage.getItem(VISIBLE_KEY);
+    if (!raw) return [];
+    const ids = JSON.parse(raw);
+    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Persist the user's toggled-on channels. Best-effort; no-ops if storage fails. */
+export function saveVisibleChannels(ids: string[]): void {
+  try {
+    localStorage.setItem(VISIBLE_KEY, JSON.stringify(ids));
+  } catch {
+    /* storage unavailable — channel prefs are best-effort */
+  }
+}
+
 /** The caller's visible channels (public + private they belong to). Pass anonId
  *  so the server can include private channels an anonymous account is in. */
 export async function fetchChannels(anonId?: string): Promise<Channel[]> {

@@ -3,7 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { CHANNELS, channelMeta, Channel, ChannelId } from "@/lib/channels";
-import { fetchChannels, createOrJoinChannel } from "@/lib/channels.client";
+import {
+  fetchChannels,
+  createOrJoinChannel,
+  loadVisibleChannels,
+  saveVisibleChannels,
+} from "@/lib/channels.client";
 import { LngLat, distance, formatDistance } from "@/lib/geo";
 import {
   fetchRadar,
@@ -72,9 +77,11 @@ export default function Home() {
   const [tagZones, setTagZones] = useState<TagZone[]>([]);
   // Tags currently filtering the radar (empty = no tag filter).
   const [activeTags, setActiveTags] = useState<Set<string>>(() => new Set());
-  const [visible, setVisible] = useState<Set<ChannelId>>(
-    () => new Set(CHANNELS.map((c) => c.id))
-  );
+  // The channels toggled on in the dock. There is no default set — the bar starts
+  // empty and the user opts in to channels (their picks persist in localStorage,
+  // hydrated in a mount effect below to keep SSR output deterministic). Channels
+  // with live activity in the area surface as off-by-default suggestions.
+  const [visible, setVisible] = useState<Set<ChannelId>>(() => new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Ids of the waypoints under a tapped cluster; drives the scroll-through menu.
   const [clusterIds, setClusterIds] = useState<string[] | null>(null);
@@ -108,31 +115,23 @@ export default function Home() {
   const [referrer, setReferrer] = useState<string | null>(null);
 
   // Resolve the persistent anon id + any existing session once on the client.
+  // Also hydrate the user's saved channel picks here (not in the useState
+  // initializer) so the server render stays deterministic and matches hydration.
   useEffect(() => {
     setUserId(loadAnonId());
     fetchMe().then(setAccount);
+    setVisible(new Set(loadVisibleChannels()));
   }, []);
 
   // Load the open channel registry (public + private the user belongs to).
   // Re-runs when identity changes (signing in can reveal private channels).
-  // Newly seen channels become visible once; later manual toggles are respected.
-  const seenChannelsRef = useRef<Set<string>>(new Set(CHANNELS.map((c) => c.id)));
+  // Channels never auto-toggle on — the dock surfaces them as suggestions and the
+  // user opts in (see toggleChannel), so we only refresh the registry here.
   function loadChannels() {
     if (!userId) return;
     fetchChannels(userId)
       .then((list) => {
-        if (!list.length) return;
-        setChannels(list);
-        setVisible((prev) => {
-          const next = new Set(prev);
-          for (const c of list) {
-            if (!seenChannelsRef.current.has(c.id)) {
-              next.add(c.id);
-              seenChannelsRef.current.add(c.id);
-            }
-          }
-          return next;
-        });
+        if (list.length) setChannels(list);
       })
       .catch((e) => console.error("fetchChannels", e));
   }
@@ -387,6 +386,16 @@ export default function Home() {
     return c;
   }, [waypoints, channels]);
 
+  // What the dock renders: the user's toggled-on channels plus any channel with
+  // live activity in the area (count > 0) as an off-by-default suggestion. Driven
+  // by `counts`, so as new waypoints arrive over the socket the suggestion list
+  // updates in realtime. With no picks and no nearby activity the bar is empty —
+  // there is deliberately no default set of channels.
+  const dockChannels = useMemo(
+    () => channels.filter((ch) => visible.has(ch.id) || (counts[ch.id] ?? 0) > 0),
+    [channels, visible, counts]
+  );
+
   // Clip to the channel toggles *and* the travel-mode range, so the map agrees
   // with the radar ring no matter the source (fetch, live push, optimistic drop)
   // and reacts instantly when the range narrows — no refetch needed.
@@ -423,6 +432,7 @@ export default function Home() {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      saveVisibleChannels([...next]);
       return next;
     });
   }
@@ -451,8 +461,13 @@ export default function Home() {
       }
       const ch = res.channel;
       setChannels((prev) => (prev.some((c) => c.id === ch.id) ? prev : [...prev, ch]));
-      seenChannelsRef.current.add(ch.id);
-      setVisible((prev) => new Set(prev).add(ch.id));
+      // Searching out a channel and joining it is an explicit opt-in, so toggle it
+      // on (and persist) — unlike passive activity-based suggestions.
+      setVisible((prev) => {
+        const next = new Set(prev).add(ch.id);
+        saveVisibleChannels([...next]);
+        return next;
+      });
     } catch (e) {
       console.error("createChannel", e);
       alert(e instanceof Error ? e.message : "could not create channel");
@@ -716,7 +731,7 @@ export default function Home() {
 
             <TagZoneBar zones={tagZones} active={activeTags} onToggle={toggleTag} />
             <ChannelDock
-              channels={channels}
+              channels={dockChannels}
               active={visible}
               counts={counts}
               onToggle={toggleChannel}
