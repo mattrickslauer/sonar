@@ -20,7 +20,6 @@ import {
   rawToWaypoint,
   MediaKind,
   Waypoint,
-  TagZone,
   SHARE_WAYPOINT_PARAM,
   SHARE_REFERRER_PARAM,
   SHARE_POS_PARAM,
@@ -41,7 +40,6 @@ import { DEFAULT_RANGE, RANGE_MAP, RangeMode } from "@/lib/range";
 import TopBar from "@/components/TopBar";
 import RangeSelector from "@/components/RangeSelector";
 import ChannelDock from "@/components/ChannelDock";
-import TagZoneBar from "@/components/TagZoneBar";
 import AskBar from "@/components/AskBar";
 import WaypointSheet from "@/components/WaypointSheet";
 import ClusterSheet from "@/components/ClusterSheet";
@@ -73,10 +71,6 @@ export default function Home() {
   // The open channel set (public + private the user belongs to). Seeded with the
   // static core for first paint, then replaced by the live registry.
   const [channels, setChannels] = useState<Channel[]>(CHANNELS);
-  // Live tag zones near the user (TTL-backed); drives the "trending" bar.
-  const [tagZones, setTagZones] = useState<TagZone[]>([]);
-  // Tags currently filtering the radar (empty = no tag filter).
-  const [activeTags, setActiveTags] = useState<Set<string>>(() => new Set());
   // The channels toggled on in the dock. There is no default set — the bar starts
   // empty and the user opts in to channels (their picks persist in localStorage,
   // hydrated in a mount effect below to keep SSR output deterministic). Channels
@@ -302,10 +296,9 @@ export default function Home() {
     let active = true;
     const ids = channelKey ? channelKey.split(",") : undefined;
     fetchRadar(center, ids, radiusMeters, userId || undefined)
-      .then(({ waypoints: w, tagZones: z }) => {
+      .then((w) => {
         if (!active) return;
         setWaypoints(w);
-        setTagZones(z);
       })
       .catch((e) => console.error("load radar", e));
     return () => {
@@ -402,12 +395,9 @@ export default function Home() {
   const visibleWaypoints = useMemo(
     () =>
       waypoints.filter(
-        (w) =>
-          visible.has(w.channel) &&
-          w.meters <= radiusMeters &&
-          (activeTags.size === 0 || (w.tags?.some((t) => activeTags.has(t)) ?? false)),
+        (w) => visible.has(w.channel) && w.meters <= radiusMeters,
       ),
-    [waypoints, visible, radiusMeters, activeTags]
+    [waypoints, visible, radiusMeters]
   );
 
   const selected = useMemo(
@@ -433,15 +423,6 @@ export default function Home() {
       if (next.has(id)) next.delete(id);
       else next.add(id);
       saveVisibleChannels([...next]);
-      return next;
-    });
-  }
-
-  function toggleTag(tag: string) {
-    setActiveTags((prev) => {
-      const next = new Set(prev);
-      if (next.has(tag)) next.delete(tag);
-      else next.add(tag);
       return next;
     });
   }
@@ -543,15 +524,14 @@ export default function Home() {
     setSelectedId((cur) => (cur === id ? null : cur));
   }
 
-  // Refetch nearby waypoints + tag zones (after a checkout return or edit/delete).
+  // Refetch nearby waypoints (after a checkout return or edit/delete).
   function reloadWaypoints() {
     const c = centerRef.current;
     if (!c) return;
     const ids = channelKey ? channelKey.split(",") : undefined;
     fetchRadar(c, ids, radiusMeters, userId || undefined)
-      .then(({ waypoints: w, tagZones: z }) => {
+      .then((w) => {
         setWaypoints(w);
-        setTagZones(z);
       })
       .catch((e) => console.error("reload radar", e));
   }
@@ -563,7 +543,6 @@ export default function Home() {
     lifespanSeconds: number,
     permanent: boolean,
     mediaKey: string | undefined,
-    tags: string[],
   ) {
     if (!center) return; // can't drop without a location
     if (permanent) {
@@ -589,7 +568,6 @@ export default function Home() {
       expiresAt,
       lifespanMs: Math.max(1, expiresAt - now),
       mediaKey,
-      tags: tags.length ? tags : undefined,
     };
     setWaypoints((prev) => [optimistic, ...prev]);
     setVisible((prev) => new Set(prev).add(channel));
@@ -606,7 +584,6 @@ export default function Home() {
       lifespanSeconds,
       mediaKey,
       ref: loadReferrer() ?? undefined,
-      tags,
     })
       .then((saved) => {
         setWaypoints((prev) => prev.map((w) => (w.id === optimistic.id ? saved : w)));
@@ -679,6 +656,7 @@ export default function Home() {
         <RadarMap
           center={center}
           waypoints={visibleWaypoints}
+          channels={channels}
           visibleChannels={visible}
           selectedId={selectedId}
           onSelect={(wp) => {
@@ -729,7 +707,6 @@ export default function Home() {
             </button>
           </div>
 
-            <TagZoneBar zones={tagZones} active={activeTags} onToggle={toggleTag} />
             <ChannelDock
               channels={dockChannels}
               active={visible}
@@ -773,10 +750,6 @@ export default function Home() {
             onManage={() => {
               setSelectedId(null);
               setManageOpen(true);
-            }}
-            onTagClick={(tag) => {
-              setSelectedId(null);
-              setActiveTags(new Set([tag]));
             }}
           />
         )}

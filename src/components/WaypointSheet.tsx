@@ -17,8 +17,6 @@ interface Props {
   currentUserId?: string;
   /** Open the permanent-waypoint console (shown for owned permanent pins). */
   onManage?: () => void;
-  /** Tap a tag chip → filter the radar by that tag. */
-  onTagClick?: (tag: string) => void;
 }
 
 export default function WaypointSheet({
@@ -29,7 +27,6 @@ export default function WaypointSheet({
   shareUser,
   currentUserId,
   onManage,
-  onTagClick,
 }: Props) {
   const ch = channelMeta(wp.channel);
   // wp.love is kept authoritative (optimistically adjusted on love/unlove).
@@ -129,20 +126,6 @@ export default function WaypointSheet({
 
         {wp.text && (
           <p className="mt-3.5 text-[15px] leading-relaxed text-white/90">{wp.text}</p>
-        )}
-
-        {wp.tags && wp.tags.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {wp.tags.map((t) => (
-              <button
-                key={t}
-                onClick={() => onTagClick?.(t)}
-                className="rounded-full bg-white/8 px-2.5 py-1 text-[12px] text-sonar transition-colors hover:bg-sonar/15"
-              >
-                #{t}
-              </button>
-            ))}
-          </div>
         )}
 
         {/* sponsored permanent waypoint badge — tappable for the owner */}

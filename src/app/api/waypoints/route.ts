@@ -1,8 +1,7 @@
 import { normalizeChannelSlug, CORE_CHANNEL_IDS } from "@/lib/channels";
 import { isUploadKind } from "@/lib/media";
-import { normalizeTags } from "@/lib/tags";
 import { isValidMediaKey } from "@/lib/server/media";
-import { queryNearby, queryTagZones, putWaypoint } from "@/lib/server/waypoints";
+import { queryNearby, putWaypoint } from "@/lib/server/waypoints";
 import { getChannelsCached, channelExists } from "@/lib/server/channels";
 import { isMember } from "@/lib/server/membership";
 import { resolveIdentity, identityErrorResponse } from "@/lib/server/identity";
@@ -64,7 +63,7 @@ async function readIdentity(request: Request, anonId: string | null): Promise<st
   }
 }
 
-// GET /api/waypoints?lat=&lng=&channels=food,music[&tags=1][&anonId=]
+// GET /api/waypoints?lat=&lng=&channels=food,music[&anonId=]
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const lat = Number(searchParams.get("lat"));
@@ -74,7 +73,6 @@ export async function GET(request: Request) {
   }
   const channelsParam = searchParams.get("channels");
   const requested = channelsParam ? channelsParam.split(",") : undefined;
-  const wantTags = searchParams.get("tags") === "1";
   // Optional fetch radius (metres) — the travel-mode range. Omitted = unbounded
   // (full cell-and-neighbours footprint).
   const radius = Number(searchParams.get("radius"));
@@ -85,11 +83,8 @@ export async function GET(request: Request) {
     const channels = await accessibleChannels(requested, accountId);
     // A supplied-but-fully-inaccessible channel set → empty result, NOT the
     // default public set (only `undefined` means "use the default").
-    const [waypoints, tagZones] = await Promise.all([
-      queryNearby({ lat, lng }, channels, radiusMeters),
-      wantTags ? queryTagZones({ lat, lng }, channels, radiusMeters) : Promise.resolve([]),
-    ]);
-    return Response.json(wantTags ? { waypoints, tagZones } : { waypoints });
+    const waypoints = await queryNearby({ lat, lng }, channels, radiusMeters);
+    return Response.json({ waypoints });
   } catch (err) {
     // Surface the real cause in the host's function logs (e.g. AccessDenied /
     // ResourceNotFound when AWS creds or region are misconfigured in prod).
@@ -99,7 +94,7 @@ export async function GET(request: Request) {
   }
 }
 
-// POST /api/waypoints  { channel, kind, text, lat, lng, author?, mediaKey?, tags? }
+// POST /api/waypoints  { channel, kind, text, lat, lng, author?, mediaKey? }
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
   const lat = Number(body?.lat);
@@ -169,7 +164,6 @@ export async function POST(request: Request) {
   // created via POST /api/billing/permanent, which handles Stripe Checkout /
   // quantity and writes the sponsored item itself.
   const lifespanSeconds = Number(body?.lifespanSeconds);
-  const tags = normalizeTags(body?.tags);
   const waypoint = await putWaypoint({
     channel,
     kind,
@@ -180,7 +174,6 @@ export async function POST(request: Request) {
     author: identity.displayName,
     lifespanSeconds: Number.isFinite(lifespanSeconds) ? lifespanSeconds : undefined,
     mediaKey: typeof mediaKey === "string" ? mediaKey : undefined,
-    tags,
   });
   return Response.json({ waypoint }, { status: 201 });
 }

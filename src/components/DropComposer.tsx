@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Channel, ChannelId } from "@/lib/channels";
-import { MAX_TAGS, MAX_TAG_LEN } from "@/lib/tags";
 import {
   MediaKind,
   MEDIA_ICON,
@@ -28,7 +27,6 @@ interface Props {
     lifespanSeconds: number,
     permanent: boolean,
     mediaKey: string | undefined,
-    tags: string[],
   ) => void;
   onClose: () => void;
   /** Whether billing is configured on the server. Hides the option when false. */
@@ -61,9 +59,6 @@ export default function DropComposer({
   );
   const [kind, setKind] = useState<MediaKind>("text");
   const [text, setText] = useState("");
-  // Ephemeral tags carried on the drop (and bumped as tag zones server-side).
-  const [tags, setTags] = useState<string[]>([]);
-  const [tagDraft, setTagDraft] = useState("");
   const [lifespan, setLifespan] = useState(DEFAULT_LIFESPAN_SECONDS);
   // A permanent (never-expiring) drop, mutually exclusive with a preset lifespan.
   // $5/mo each — billed when the drop is submitted (Checkout or one-click).
@@ -91,24 +86,6 @@ export default function DropComposer({
     previewRef.current = url;
     setPreviewUrl(url);
     setFile(f);
-  }
-
-  function cleanTag(s: string): string {
-    return s.toLowerCase().replace(/^#+/, "").replace(/[^a-z0-9]/g, "").slice(0, MAX_TAG_LEN);
-  }
-  function commitTag() {
-    const t = cleanTag(tagDraft);
-    setTagDraft("");
-    if (!t || tags.includes(t) || tags.length >= MAX_TAGS) return;
-    setTags((prev) => [...prev, t]);
-  }
-  function onTagKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter" || e.key === " " || e.key === ",") {
-      e.preventDefault();
-      commitTag();
-    } else if (e.key === "Backspace" && !tagDraft && tags.length) {
-      setTags((prev) => prev.slice(0, -1));
-    }
   }
 
   // Switching kind clears any picked file (its type may no longer be valid).
@@ -148,13 +125,7 @@ export default function DropComposer({
         setUploading(true);
         mediaKey = await uploadMedia(file, channel, kind);
       }
-      // Fold any typed-but-uncommitted tag into the final list.
-      const pending = cleanTag(tagDraft);
-      const finalTags =
-        pending && !tags.includes(pending) && tags.length < MAX_TAGS
-          ? [...tags, pending]
-          : tags;
-      onDrop(channel, kind, text.trim(), lifespan, permanent, mediaKey, finalTags);
+      onDrop(channel, kind, text.trim(), lifespan, permanent, mediaKey);
     } catch (err) {
       setError(err instanceof Error ? err.message : "upload failed");
       setUploading(false);
@@ -282,32 +253,6 @@ export default function DropComposer({
           }
           className="mb-4 w-full resize-none rounded-2xl border border-white/12 bg-black/40 p-3.5 text-[14px] text-white placeholder:text-white/35 focus:border-sonar/50 focus:outline-none"
         />
-
-        <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-white/40">
-          tags · live where you are
-        </p>
-        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-white/12 bg-black/40 p-2.5">
-          {tags.map((t) => (
-            <button
-              key={t}
-              onClick={() => setTags((prev) => prev.filter((x) => x !== t))}
-              className="flex items-center gap-1 rounded-full bg-sonar/15 px-2.5 py-1 text-[12px] text-sonar"
-            >
-              #{t} <span className="opacity-60">✕</span>
-            </button>
-          ))}
-          {tags.length < MAX_TAGS && (
-            <input
-              value={tagDraft}
-              onChange={(e) => setTagDraft(e.target.value)}
-              onKeyDown={onTagKeyDown}
-              onBlur={commitTag}
-              maxLength={MAX_TAG_LEN}
-              placeholder={tags.length ? "add tag" : "#sunset  #frontrow  …"}
-              className="min-w-[7rem] flex-1 bg-transparent px-1 text-[13px] text-white placeholder:text-white/30 focus:outline-none"
-            />
-          )}
-        </div>
 
         <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-white/40">
           lifespan
