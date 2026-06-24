@@ -83,12 +83,24 @@ export async function removeMember(channelId: string, accountId: string): Promis
 export interface MemberRow {
   accountId: string;
   role: ChannelRole;
+  /** The member's display name (LEFT JOINed from accounts; null if the account
+   *  row is somehow absent). Anonymous members default to "you" until they set
+   *  one on join or claim the account. */
+  displayName: string | null;
+  /** The member's handle (= the account UUID until claimed). */
+  handle: string | null;
 }
 
-/** All members of a channel (DSQL authoritative). */
+/** All members of a channel (DSQL authoritative), with display names for the
+ *  owner's manage UI. LEFT JOIN so a member with no accounts row still lists. */
 export async function listMembers(channelId: string): Promise<MemberRow[]> {
-  const res = await query<{ accountId: string; role: ChannelRole }>(
-    `SELECT account_id AS "accountId", role FROM channel_members WHERE channel_id = $1`,
+  const res = await query<MemberRow>(
+    `SELECT m.account_id AS "accountId", m.role,
+            a.display_name AS "displayName", a.handle
+       FROM channel_members m
+       LEFT JOIN accounts a ON a.id = m.account_id
+      WHERE m.channel_id = $1
+      ORDER BY m.created_at`,
     [channelId],
   );
   return res.rows;

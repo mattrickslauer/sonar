@@ -41,6 +41,8 @@ interface Props {
   onSignOut: () => void | Promise<void>;
   /** Open the permanent-waypoint management console (signed-in only). */
   onManage?: () => void;
+  /** Open the private-channel management sheet (signed-in only). */
+  onManageChannels?: () => void;
 }
 
 export default function ClaimSheet({
@@ -50,6 +52,7 @@ export default function ClaimSheet({
   onSignedIn,
   onSignOut,
   onManage,
+  onManageChannels,
 }: Props) {
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
@@ -211,6 +214,17 @@ export default function ClaimSheet({
               Your drops and likes are saved to this account — they follow you to
               any device you sign in on.
             </p>
+            {onManageChannels && (
+              <button
+                onClick={onManageChannels}
+                className="mb-2.5 flex w-full items-center justify-between rounded-2xl border border-white/12 bg-black/55 px-4 py-3.5 text-[15px] font-semibold text-white/85"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-sonar">🔒</span> My channels
+                </span>
+                <span className="text-white/35">›</span>
+              </button>
+            )}
             {onManage && (
               <button
                 onClick={onManage}
