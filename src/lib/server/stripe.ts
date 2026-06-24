@@ -18,11 +18,20 @@ import Stripe from "stripe";
 const SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 export const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID;
 export const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+// A recurring METERED price (recurring.usage_type=metered, aggregate_usage=sum)
+// for locked private channels. One usage unit = one member-hour; the hourly tick
+// (infra/lambda/channel-meter-tick) reports usage = current member count.
+export const STRIPE_CHANNEL_PRICE_ID = process.env.STRIPE_CHANNEL_PRICE_ID;
 
 /** Whether billing is configured (secret key + price present). Routes return
  *  503 when false so the app keeps running without Stripe. */
 export function stripeConfigured(): boolean {
   return Boolean(SECRET_KEY && STRIPE_PRICE_ID);
+}
+
+/** Whether LOCKED-CHANNEL billing is configured (secret key + metered price). */
+export function channelBillingConfigured(): boolean {
+  return Boolean(SECRET_KEY && STRIPE_CHANNEL_PRICE_ID);
 }
 
 let client: Stripe | undefined;

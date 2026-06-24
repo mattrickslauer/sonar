@@ -165,6 +165,26 @@ export async function fetchWaypoints(
   return data.waypoints as Waypoint[];
 }
 
+/** Fetch the waypoints near a center for the given channels in one round trip. */
+export async function fetchRadar(
+  center: LngLat,
+  channels?: ChannelId[],
+  radiusMeters?: number,
+  anonId?: string,
+): Promise<Waypoint[]> {
+  const params = new URLSearchParams({
+    lat: String(center.lat),
+    lng: String(center.lng),
+  });
+  if (channels) params.set("channels", channels.join(","));
+  if (radiusMeters) params.set("radius", String(Math.round(radiusMeters)));
+  if (anonId) params.set("anonId", anonId);
+  const res = await fetch(`/api/waypoints?${params}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`fetchRadar failed: ${res.status}`);
+  const data = await res.json();
+  return (data.waypoints ?? []) as Waypoint[];
+}
+
 /** Persist a drop at `center` and return the saved waypoint. The display author
  *  is derived server-side from the resolved identity (session or anon account);
  *  the client only supplies `anonId` for the unauthenticated case. */

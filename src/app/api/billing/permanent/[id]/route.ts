@@ -1,6 +1,7 @@
-import { ChannelId, CHANNEL_MAP } from "@/lib/channels";
+import { normalizeChannelSlug } from "@/lib/channels";
 import { readSession, sessionConfigured } from "@/lib/server/session";
 import { dsqlConfigured } from "@/lib/server/dsql";
+import { channelExists } from "@/lib/server/channels";
 import { stripeConfigured } from "@/lib/server/stripe";
 import {
   editOwnedWaypoint,
@@ -32,8 +33,11 @@ export async function PATCH(request: Request, ctx: Ctx) {
   const b = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   const patch: EditWaypointPatch = {};
   if (typeof b?.text === "string") patch.text = b.text.trim();
-  if (typeof b?.channel === "string" && b.channel in CHANNEL_MAP) {
-    patch.channel = b.channel as ChannelId;
+  if (typeof b?.channel === "string") {
+    // Open channel set: validate against the DSQL registry (cached), not a
+    // hardcoded map. Store the normalized slug.
+    const slug = normalizeChannelSlug(b.channel);
+    if (slug && (await channelExists(slug))) patch.channel = slug;
   }
   const lat = Number(b?.lat);
   const lng = Number(b?.lng);

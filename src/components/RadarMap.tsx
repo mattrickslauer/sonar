@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { CHANNEL_MAP, ChannelId } from "@/lib/channels";
+import { CHANNEL_MAP, ChannelId, channelMeta } from "@/lib/channels";
 import { LngLat } from "@/lib/geo";
 import { MEDIA_ICON, Waypoint } from "@/lib/waypoints";
 import { attachGroundRadar, GroundRadar } from "@/lib/groundRadar";
@@ -15,6 +15,9 @@ mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 interface Props {
   center: LngLat;
   waypoints: Waypoint[];
+  /** Live channel registry (open + private), used to resolve marker colors for
+   *  user-created channels that aren't in the static core map. */
+  channels: Channel[];
   visibleChannels: Set<ChannelId>;
   selectedId: string | null;
   onSelect: (wp: Waypoint) => void;
@@ -95,8 +98,7 @@ function styleMarker(entry: MarkerEntry, selected: boolean) {
   el.style.zIndex = selected ? "5" : ""; // below the puck (10), above other pins
 }
 
-function buildMarkerEl(wp: Waypoint): { el: HTMLElement; dot: HTMLElement; ring: SVGCircleElement } {
-  const ch = CHANNEL_MAP[wp.channel];
+function buildMarkerEl(wp: Waypoint, ch: Channel): { el: HTMLElement; dot: HTMLElement; ring: SVGCircleElement } {
   const fresh = wp.minutesAgo < 30;
 
   // NOTE: Mapbox fully owns this root element's positioning (it adds
@@ -160,7 +162,10 @@ interface ClusterMarkerEntry {
 
 // The cluster circle takes the color of its most-common channel; a mixed group
 // is ringed in white to read as "several channels stacked here".
-function clusterColor(cluster: Cluster): { color: string; mixed: boolean } {
+function clusterColor(
+  cluster: Cluster,
+  resolve: (id: ChannelId) => Channel,
+): { color: string; mixed: boolean } {
   const tally = new Map<ChannelId, number>();
   for (const wp of cluster.waypoints) {
     tally.set(wp.channel, (tally.get(wp.channel) ?? 0) + 1);
@@ -173,17 +178,20 @@ function clusterColor(cluster: Cluster): { color: string; mixed: boolean } {
       bestN = n;
     }
   }
-  return { color: CHANNEL_MAP[best].color, mixed: tally.size > 1 };
+  return { color: resolve(best).color, mixed: tally.size > 1 };
 }
 
 // One combined circle standing in for every pin underneath it. The radius grows
 // linearly with the count (clusterRadius), and the member tally sits in the
 // middle so it reads as "tap to expand N".
-function buildClusterEl(cluster: Cluster): HTMLElement {
+function buildClusterEl(
+  cluster: Cluster,
+  resolve: (id: ChannelId) => Channel,
+): HTMLElement {
   const count = cluster.waypoints.length;
   const r = clusterRadius(count);
   const size = r * 2;
-  const { color, mixed } = clusterColor(cluster);
+  const { color, mixed } = clusterColor(cluster, resolve);
 
   const el = document.createElement("button");
   el.className = "sonar-cluster";
@@ -210,6 +218,7 @@ function buildClusterEl(cluster: Cluster): HTMLElement {
 export default function RadarMap({
   center,
   waypoints,
+  channels,
   visibleChannels,
   selectedId,
   onSelect,
@@ -254,6 +263,10 @@ export default function RadarMap({
   waypointsRef.current = waypoints;
   const visibleRef = useRef<Set<ChannelId>>(visibleChannels);
   visibleRef.current = visibleChannels;
+  // Latest channel registry as an id→meta map, read by the reconcile pass to
+  // resolve marker/cluster colors (incl. user-created channels not in the core).
+  const channelMapRef = useRef<Map<ChannelId, Channel>>(new Map());
+  channelMapRef.current = new Map(channels.map((c) => [c.id, c]));
   const reconcileRafRef = useRef<number | null>(null);
 
   // "New waypoint" entrance feedback (pop + chime). seenIds tracks every id we've
@@ -448,6 +461,9 @@ export default function RadarMap({
     const live = markersRef.current;
     const clusterLive = clusterMarkersRef.current;
     const selectedId = selectedIdRef.current;
+    // Resolve a channel's presentation from the live registry, falling back to
+    // the core map then a generic placeholder — never throws on an unknown id.
+    const resolve = (id: ChannelId): Channel => channelMeta(id, channelMapRef.current);
 
     const visible = waypoints.filter((w) => visibleChannels.has(w.channel));
 
@@ -479,12 +495,12 @@ export default function RadarMap({
     }
 
     for (const wp of singles) {
-      const ch = CHANNEL_MAP[wp.channel];
+      const ch = resolve(wp.channel);
       const ageOpacity = ageOpacityFor(wp);
       const existing = live.get(wp.id);
 
       if (!existing) {
-        const { el, dot, ring } = buildMarkerEl(wp);
+        const { el, dot, ring } = buildMarkerEl(wp, ch);
         el.addEventListener("click", (e) => {
           e.stopPropagation();
           onSelectRef.current(wp);
@@ -543,7 +559,7 @@ export default function RadarMap({
         existing.marker.setLngLat([cluster.lng, cluster.lat]);
         continue;
       }
-      const el = buildClusterEl(cluster);
+      const el = buildClusterEl(cluster, resolve);
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         onSelectClusterRef.current(cluster.waypoints);
