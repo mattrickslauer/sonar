@@ -267,3 +267,17 @@ export async function claimOrSignIn(
 export async function recordLogin(id: string): Promise<void> {
   await query(`UPDATE accounts SET last_login_at = now() WHERE id = $1`, [id]);
 }
+
+/**
+ * Set an anonymous account's display name (e.g. the name typed on a channel join
+ * screen). No-op for CLAIMED accounts — a signed-in user's chosen name must not be
+ * overwritten by a join form. Best-effort; the trimmed name is capped at 48 chars.
+ */
+export async function setDisplayNameIfUnclaimed(id: string, name: string): Promise<void> {
+  const clean = name.trim().slice(0, 48);
+  if (!clean) return;
+  await query(
+    `UPDATE accounts SET display_name = $2 WHERE id = $1 AND claimed_at IS NULL`,
+    [id, clean],
+  );
+}

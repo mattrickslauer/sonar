@@ -21,6 +21,12 @@ export function randomChannelId(): string {
   return id;
 }
 
+/** A random, unguessable URL-safe join-link token (base64url, 16 bytes ≈ 22
+ *  chars). Distinct from the channel id — see 009_channel_join_token.sql. */
+export function randomJoinToken(): string {
+  return randomBytes(16).toString("base64url");
+}
+
 const SERIALIZATION_FAILURE = "40001"; // DSQL OCC conflict
 
 /** Retry a unit of work on DSQL optimistic-concurrency conflicts (mirrors
@@ -48,11 +54,13 @@ export interface ChannelRow {
   ownerAccountId: string | null;
   status: string;
   createdAt: string;
+  joinToken: string | null;
 }
 
 const SELECT_COLS = `
   id, label, emoji, color, is_private AS "isPrivate",
-  owner_account_id AS "ownerAccountId", status, created_at AS "createdAt"
+  owner_account_id AS "ownerAccountId", status, created_at AS "createdAt",
+  join_token AS "joinToken"
 `;
 
 /** One channel by id, or null. */
@@ -193,6 +201,78 @@ export async function setChannelStatus(id: string, status: string): Promise<void
     await query(`UPDATE channels SET status = $2 WHERE id = $1`, [id, status]);
   });
   invalidateCache();
+}
+
+// ---------------------------------------------------------------------------
+// Join links. The public link is /j/<joinToken>; the token is minted lazily the
+// first time the owner views the link and can be rotated (regenerate) to revoke
+// every outstanding link at once. See 009_channel_join_token.sql.
+// ---------------------------------------------------------------------------
+
+/** Resolve a join-link token to its channel, or null. Used by /api/join/[token];
+ *  callers must still check status === 'active' && isPrivate before granting. */
+export async function getChannelByJoinToken(token: string): Promise<ChannelRow | null> {
+  if (!token) return null;
+  const res = await query<ChannelRow>(
+    `SELECT ${SELECT_COLS} FROM channels WHERE join_token = $1 LIMIT 1`,
+    [token],
+  );
+  return res.rows[0] ?? null;
+}
+
+/** The channel's join token, minting one on first access. The conditional UPDATE
+ *  (join_token IS NULL) is idempotent under DSQL OCC — two concurrent first-views
+ *  converge on whichever token committed first (re-read after the retry). */
+export async function getOrCreateJoinToken(channelId: string): Promise<string> {
+  return withRetry(async () => {
+    const existing = await getChannel(channelId);
+    if (existing?.joinToken) return existing.joinToken;
+    const token = randomJoinToken();
+    const upd = await query<{ joinToken: string }>(
+      `UPDATE channels SET join_token = $2
+         WHERE id = $1 AND join_token IS NULL
+         RETURNING join_token AS "joinToken"`,
+      [channelId, token],
+    );
+    if (upd.rows[0]) {
+      invalidateCache();
+      return upd.rows[0].joinToken;
+    }
+    // Someone minted one underneath us → re-read it.
+    const fresh = await getChannel(channelId);
+    if (!fresh?.joinToken) throw new Error("join token vanished after mint"); // retry on OCC
+    return fresh.joinToken;
+  });
+}
+
+/** Rotate the join token, invalidating every existing link. Returns the new token. */
+export async function rotateJoinToken(channelId: string): Promise<string> {
+  const token = randomJoinToken();
+  await withRetry(async () => {
+    await query(`UPDATE channels SET join_token = $2 WHERE id = $1`, [channelId, token]);
+  });
+  invalidateCache();
+  return token;
+}
+
+export interface MyChannelRow extends ChannelRow {
+  role: string;
+}
+
+/** Active channels the account owns or belongs to, with the caller's membership
+ *  role — powers the "My Channels" sheet. Joins channel_members → channels. */
+export async function listMyChannelsWithRole(accountId: string): Promise<MyChannelRow[]> {
+  const res = await query<MyChannelRow>(
+    `SELECT c.id, c.label, c.emoji, c.color, c.is_private AS "isPrivate",
+            c.owner_account_id AS "ownerAccountId", c.status,
+            c.created_at AS "createdAt", c.join_token AS "joinToken", m.role
+       FROM channel_members m
+       JOIN channels c ON c.id = m.channel_id
+      WHERE m.account_id = $1 AND c.status = 'active'
+      ORDER BY c.created_at`,
+    [accountId],
+  );
+  return res.rows;
 }
 
 /** Raised when a channel name normalizes to the empty string. */
@@ -364,6 +444,7 @@ function staticFallbackMap(): Map<string, ChannelRow> {
       ownerAccountId: null,
       status: "active",
       createdAt: new Date(0).toISOString(),
+      joinToken: null,
     });
   }
   return byId;

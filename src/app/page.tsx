@@ -47,6 +47,7 @@ import DropComposer from "@/components/DropComposer";
 import LocationGate from "@/components/LocationGate";
 import ClaimSheet from "@/components/ClaimSheet";
 import ManageSheet from "@/components/ManageSheet";
+import MyChannelsSheet from "@/components/MyChannelsSheet";
 
 // mapbox-gl touches window → load the map client-side only
 const RadarMap = dynamic(() => import("@/components/RadarMap"), { ssr: false });
@@ -91,6 +92,8 @@ export default function Home() {
   const [claimOpen, setClaimOpen] = useState(false);
   // The permanent-waypoint management console (signed-in only).
   const [manageOpen, setManageOpen] = useState(false);
+  // The private-channel management sheet (view/own channels, links, members).
+  const [channelsOpen, setChannelsOpen] = useState(false);
   // Whether Stripe billing is configured on the server (gates the "Permanent ·
   // $5/mo" option in the composer). Resolved from the billing console endpoint.
   const [billingConfigured, setBillingConfigured] = useState(false);
@@ -794,6 +797,10 @@ export default function Home() {
               setClaimOpen(false);
               setManageOpen(true);
             }}
+            onManageChannels={() => {
+              setClaimOpen(false);
+              setChannelsOpen(true);
+            }}
           />
         )}
 
@@ -802,6 +809,14 @@ export default function Home() {
             here={center}
             onClose={() => setManageOpen(false)}
             onChanged={reloadWaypoints}
+          />
+        )}
+
+        {channelsOpen && (
+          <MyChannelsSheet
+            anonId={userId}
+            onClose={() => setChannelsOpen(false)}
+            onChanged={loadChannels}
           />
         )}
       </div>

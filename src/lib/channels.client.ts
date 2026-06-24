@@ -104,3 +104,116 @@ export async function cancelChannel(channelId: string): Promise<void> {
     throw new Error(data?.error ?? `cancelChannel failed: ${res.status}`);
   }
 }
+
+// --- "My Channels" management + join links ---------------------------------
+
+/** A channel the caller owns or belongs to, with their role (the manage sheet). */
+export interface MyChannel extends Channel {
+  status: string;
+  role: "owner" | "member";
+  isOwner: boolean;
+}
+
+/** A member of a channel, for the owner's manage list. */
+export interface ChannelMember {
+  accountId: string;
+  role: "owner" | "member";
+  displayName: string | null;
+  handle: string | null;
+}
+
+async function jsonOrThrow<T>(res: Response, what: string): Promise<T> {
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error ?? `${what} failed: ${res.status}`);
+  return data as T;
+}
+
+/** The caller's channels (owned + joined) with role. Pass anonId for anon members. */
+export async function fetchMyChannels(anonId?: string): Promise<MyChannel[]> {
+  const params = new URLSearchParams();
+  if (anonId) params.set("anonId", anonId);
+  const res = await fetch(`/api/me/channels?${params}`, { cache: "no-store" });
+  const data = await jsonOrThrow<{ channels: MyChannel[] }>(res, "fetchMyChannels");
+  return data.channels;
+}
+
+/** Owner: list a channel's members (with display names). */
+export async function listChannelMembers(channelId: string): Promise<ChannelMember[]> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/members`, {
+    cache: "no-store",
+  });
+  const data = await jsonOrThrow<{ members: ChannelMember[] }>(res, "listChannelMembers");
+  return data.members;
+}
+
+/** Owner: revoke a member. */
+export async function removeChannelMember(channelId: string, accountId: string): Promise<void> {
+  const res = await fetch(
+    `/api/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(accountId)}`,
+    { method: "DELETE" },
+  );
+  await jsonOrThrow(res, "removeChannelMember");
+}
+
+/** Build the absolute join URL for a token (browser-only). */
+export function joinUrl(token: string): string {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return `${origin}/j/${token}`;
+}
+
+/** Owner: fetch the channel's join link (minted on first call). */
+export async function getJoinLink(channelId: string): Promise<string> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/join-token`, {
+    cache: "no-store",
+  });
+  const data = await jsonOrThrow<{ token: string }>(res, "getJoinLink");
+  return joinUrl(data.token);
+}
+
+/** Owner: rotate the join link (revokes outstanding links). Returns the new URL. */
+export async function rotateJoinLink(channelId: string): Promise<string> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/join-token`, {
+    method: "POST",
+  });
+  const data = await jsonOrThrow<{ token: string }>(res, "rotateJoinLink");
+  return joinUrl(data.token);
+}
+
+/** Member: leave a channel (the owner must cancel instead). */
+export async function leaveChannel(channelId: string, anonId?: string): Promise<void> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(channelId)}/leave`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ anonId }),
+  });
+  await jsonOrThrow(res, "leaveChannel");
+}
+
+export interface JoinPreview {
+  channel: { label: string; emoji: string; color: string };
+  alreadyMember: boolean;
+}
+
+/** Public: preview a join link (the landing page). Throws on an invalid link. */
+export async function fetchJoinPreview(token: string, anonId?: string): Promise<JoinPreview> {
+  const params = new URLSearchParams();
+  if (anonId) params.set("anonId", anonId);
+  const res = await fetch(`/api/join/${encodeURIComponent(token)}?${params}`, {
+    cache: "no-store",
+  });
+  return jsonOrThrow<JoinPreview>(res, "fetchJoinPreview");
+}
+
+/** Public: join via link. Returns the channel id to toggle on after redirect. */
+export async function joinViaToken(
+  token: string,
+  opts: { anonId?: string; displayName?: string },
+): Promise<string> {
+  const res = await fetch(`/api/join/${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(opts),
+  });
+  const data = await jsonOrThrow<{ channelId: string }>(res, "joinViaToken");
+  return data.channelId;
+}
