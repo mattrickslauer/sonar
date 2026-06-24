@@ -29,6 +29,9 @@ const REGION = process.env.AWS_REGION || "us-east-1";
 const DSQL_ENDPOINT = process.env.DSQL_ENDPOINT;
 const TABLE_NAME = process.env.TABLE_NAME;
 const STRIPE_SECRET_PARAM = process.env.STRIPE_SECRET_PARAM;
+// The Stripe Billing Meter event_name the channel price is backed by. Member-
+// hours are reported as meter events carrying this name + the channel's customer.
+const METER_EVENT = process.env.STRIPE_CHANNEL_METER_EVENT || "sonar_channel_member_hours";
 const MARKER_TTL_SECONDS = 3 * 24 * 60 * 60; // observability marker lifetime
 
 const ssm = new SSMClient({ region: REGION });
@@ -61,30 +64,39 @@ async function dsqlConnect() {
   return client;
 }
 
-// Active locked channels + their live member count, in one relational query.
+// Active locked channels + their dedicated customer + live member count.
 const SELECT_ACTIVE = `
-  SELECT b.channel_id, b.subscription_item_id, count(m.account_id)::int AS members
+  SELECT b.channel_id, b.stripe_customer_id, count(m.account_id)::int AS members
   FROM channel_billing b
   JOIN channels c ON c.id = b.channel_id
   LEFT JOIN channel_members m ON m.channel_id = b.channel_id
   WHERE b.status IN ('active','trialing')
-    AND b.subscription_item_id IS NOT NULL
+    AND b.stripe_customer_id IS NOT NULL
     AND c.status = 'active'
-  GROUP BY b.channel_id, b.subscription_item_id
+  GROUP BY b.channel_id, b.stripe_customer_id
 `;
 
-/** POST a Stripe metered usage record over raw https. Resolves on 2xx. */
-function reportUsage(secret, itemId, quantity, timestamp, idempotencyKey) {
-  const body = `quantity=${quantity}&timestamp=${timestamp}&action=increment`;
+/**
+ * Report member-hours as a Stripe Billing Meter EVENT (the flexible-billing
+ * model; usage records are deprecated). The event carries the channel's
+ * dedicated customer id, so Stripe attributes it to that channel's subscription.
+ * `identifier` makes it idempotent per channel-hour (Stripe dedupes repeats).
+ */
+function reportMeterEvent(secret, customerId, value, timestamp, identifier) {
+  const body =
+    `event_name=${encodeURIComponent(METER_EVENT)}` +
+    `&timestamp=${timestamp}` +
+    `&identifier=${encodeURIComponent(identifier)}` +
+    `&payload[value]=${value}` +
+    `&payload[stripe_customer_id]=${encodeURIComponent(customerId)}`;
   const options = {
     method: "POST",
     hostname: "api.stripe.com",
-    path: `/v1/subscription_items/${encodeURIComponent(itemId)}/usage_records`,
+    path: `/v1/billing/meter_events`,
     headers: {
       Authorization: `Bearer ${secret}`,
       "Content-Type": "application/x-www-form-urlencoded",
       "Content-Length": Buffer.byteLength(body),
-      "Idempotency-Key": idempotencyKey,
     },
   };
   return new Promise((resolve, reject) => {
@@ -143,15 +155,15 @@ exports.handler = async () => {
     for (const row of res.rows || []) {
       const members = Number(row.members || 0);
       if (members <= 0) continue; // nothing to bill this hour
-      const key = `usage:${row.channel_id}:${hourKey}`;
+      const identifier = `usage:${row.channel_id}:${hourKey}`;
       try {
-        await reportUsage(secret, row.subscription_item_id, members, hourStart, key);
+        await reportMeterEvent(secret, row.stripe_customer_id, members, hourStart, identifier);
         await writeMarker(row.channel_id, hourKey, members, nowSec);
         billed++;
       } catch (err) {
-        // Don't let one channel's failure abort the rest; the idempotency key
-        // makes a future retry safe.
-        console.error(`usage report failed for ${row.channel_id}:`, err.message);
+        // Don't let one channel's failure abort the rest; the identifier makes a
+        // future retry safe (Stripe dedupes meter events by identifier).
+        console.error(`meter event failed for ${row.channel_id}:`, err.message);
       }
     }
   } finally {

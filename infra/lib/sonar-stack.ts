@@ -284,7 +284,12 @@ export class SonarStack extends cdk.Stack {
     const stripeSecretKeyParam = "/sonar/stripe/secret-key";
     const channelMeterTick = makeFn("ChannelMeterTickFn", "channel-meter-tick", {
       layers: [dsqlLayer],
-      env: { STRIPE_SECRET_PARAM: stripeSecretKeyParam },
+      env: {
+        STRIPE_SECRET_PARAM: stripeSecretKeyParam,
+        // Must match the Billing Meter event_name the channel price is backed by.
+        STRIPE_CHANNEL_METER_EVENT:
+          process.env.STRIPE_CHANNEL_METER_EVENT || "sonar_channel_member_hours",
+      },
     });
     channelMeterTick.addToRolePolicy(dsqlConnect); // admin DSQL auth
     table.grantReadWriteData(channelMeterTick); // billed-hour markers

@@ -6,8 +6,25 @@
 // See src/lib/server/channels.ts (channel_billing) + 008_channel_billing.sql.
 import { stripe, STRIPE_CHANNEL_PRICE_ID, appBaseUrl } from "@/lib/server/stripe";
 import type { Account } from "@/lib/server/accounts";
-import { ensureCustomer } from "@/lib/server/billing";
 import { getChannelBilling } from "@/lib/server/channels";
+
+/**
+ * A DEDICATED Stripe customer per locked channel. Stripe's flexible billing
+ * meters attribute usage by CUSTOMER (meter events carry a stripe_customer_id),
+ * so a 1:1 channel↔customer mapping is required to bill each channel separately
+ * when one account owns several. Always created fresh in the current Stripe mode
+ * (which also sidesteps any cross-mode customer reuse on the shared DSQL
+ * cluster). The customer is persisted in channel_billing by the webhook; the
+ * hourly tick reports member-hours against it.
+ */
+async function createChannelCustomer(account: Account, channelId: string): Promise<string> {
+  const customer = await stripe().customers.create({
+    email: account.email ?? undefined,
+    name: `${account.displayName} · channel ${channelId}`,
+    metadata: { account_id: account.id, channel_id: channelId },
+  });
+  return customer.id;
+}
 
 /**
  * Start hosted Checkout for a locked channel: a `subscription`-mode session on
@@ -21,7 +38,7 @@ export async function createChannelCheckout(
   channelId: string,
   request: Request,
 ): Promise<string | null> {
-  const customerId = await ensureCustomer(account);
+  const customerId = await createChannelCustomer(account, channelId);
   const base = appBaseUrl(request);
   const checkout = await stripe().checkout.sessions.create({
     mode: "subscription",
