@@ -68,6 +68,20 @@ export default function ChannelDock({
     };
   }, [name, creating, isPrivate]);
 
+  // Float toggled-on channels to the front of the carousel so the user's active
+  // set reads first. Stable within each group, so the underlying order (and the
+  // relative order of the off channels) is otherwise preserved.
+  const ordered = useMemo(() => {
+    return channels
+      .map((ch, i) => ({ ch, i }))
+      .sort((a, b) => {
+        const oa = active.has(a.ch.id) ? 0 : 1;
+        const ob = active.has(b.ch.id) ? 0 : 1;
+        return oa - ob || a.i - b.i;
+      })
+      .map((x) => x.ch);
+  }, [channels, active]);
+
   const slug = normalizeChannelSlug(name);
   // An exact-slug hit means the channel already exists — the primary action
   // becomes "Join" rather than "Create", and we lift it out of the list.
@@ -102,7 +116,7 @@ export default function ChannelDock({
         >
           <span className="text-[15px] leading-none">＋</span> New
         </button>
-        {channels.map((ch) => {
+        {ordered.map((ch) => {
           const on = active.has(ch.id);
           return (
             <button
