@@ -68,21 +68,25 @@ export default function ChannelDock({
     };
   }, [name, creating, isPrivate]);
 
-  // "general" is sticky-first next to the New button; everything else is ranked
-  // by nearby activity (count desc), tie-broken by the underlying order so the
-  // carousel reads as "the general, then the busiest channels around you".
+  // "general" is sticky-first next to the New button; then the channels you've
+  // toggled on float to the front, and the rest (off-by-default suggestions) are
+  // ranked by nearby activity (count desc), tie-broken by the underlying order.
+  // So the carousel reads as "general, your channels, then the busiest nearby".
   const ordered = useMemo(() => {
     return channels
       .map((ch, i) => ({ ch, i }))
       .sort((a, b) => {
         if (a.ch.id === "general") return -1;
         if (b.ch.id === "general") return 1;
+        const aOn = active.has(a.ch.id) ? 1 : 0;
+        const bOn = active.has(b.ch.id) ? 1 : 0;
+        if (aOn !== bOn) return bOn - aOn;
         const na = counts[a.ch.id] ?? 0;
         const nb = counts[b.ch.id] ?? 0;
         return nb - na || a.i - b.i;
       })
       .map((x) => x.ch);
-  }, [channels, counts]);
+  }, [channels, counts, active]);
 
   const slug = normalizeChannelSlug(name);
   // An exact-slug hit means the channel already exists — the primary action

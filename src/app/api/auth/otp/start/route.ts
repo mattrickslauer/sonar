@@ -1,5 +1,5 @@
 import { startOtp } from "@/lib/server/otp";
-import { sendOtpEmail } from "@/lib/server/ses";
+import { sendOtpEmail } from "@/lib/server/email";
 import { dsqlConfigured } from "@/lib/server/dsql";
 import { sessionConfigured } from "@/lib/server/session";
 

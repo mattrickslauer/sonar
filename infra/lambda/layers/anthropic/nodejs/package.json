@@ -1,0 +1,10 @@
+{
+  "name": "sonar-anthropic-layer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lambda layer deps for the bot-tick liveness Lambda: the Anthropic SDK (Haiku-generated bot post text) and the SSM client (reads the API key from Parameter Store at runtime).",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
+    "@aws-sdk/client-ssm": "^3.731.0"
+  }
+}
