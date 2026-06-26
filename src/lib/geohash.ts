@@ -59,3 +59,26 @@ export function cellAndNeighbors(lat: number, lng: number, precision = 6): strin
   const center = encodeGeohash(lat, lng, precision);
   return [...new Set([center, ...geohashNeighbors(center)])];
 }
+
+/** Decode a geohash back to the CENTER lat/lng of its cell. Inverse of
+ *  encodeGeohash; used to position a tag zone (keyed by gh6) on the radar. */
+export function decodeGeohash(hash: string): { lat: number; lng: number } {
+  let even = true;
+  let latMin = -90, latMax = 90, lonMin = -180, lonMax = 180;
+  for (const ch of hash.toLowerCase()) {
+    const idx = BASE32.indexOf(ch);
+    if (idx === -1) continue;
+    for (let bit = 4; bit >= 0; bit--) {
+      const b = (idx >> bit) & 1;
+      if (even) {
+        const mid = (lonMin + lonMax) / 2;
+        if (b) lonMin = mid; else lonMax = mid;
+      } else {
+        const mid = (latMin + latMax) / 2;
+        if (b) latMin = mid; else latMax = mid;
+      }
+      even = !even;
+    }
+  }
+  return { lat: (latMin + latMax) / 2, lng: (lonMin + lonMax) / 2 };
+}

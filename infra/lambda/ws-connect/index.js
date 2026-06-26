@@ -14,7 +14,13 @@ const { DynamoDBDocumentClient, BatchWriteCommand } = require("@aws-sdk/lib-dyna
 const TABLE = process.env.TABLE_NAME || "sonar";
 const REGION = process.env.AWS_REGION || "us-east-1";
 const CONN_TTL_SECONDS = 2 * 60 * 60; // safety net if $disconnect is missed
-const ALL_CHANNELS = ["events", "food", "music", "social", "safety"];
+// Channels are an open set, so we validate STRUCTURALLY (a normalized slug) here
+// rather than against a closed list — a bogus channel just creates a dead CONN#
+// partition no one publishes to. Private-channel access is enforced upstream by
+// the $connect authorizer (it denies the handshake for non-members), so by the
+// time we run, every requested channel is authorized. Empty → the public core.
+const CORE_CHANNELS = ["general", "events", "food", "music", "social", "safety"];
+const VALID_CHANNEL = /^[a-z0-9]{1,16}$/;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }), {
   marshallOptions: { removeUndefinedValues: true },
@@ -29,10 +35,14 @@ exports.handler = async (event) => {
   const account = event.requestContext?.authorizer?.sub || null;
 
   const raw = event.queryStringParameters?.channels;
-  const channels = (raw ? raw.split(",") : ALL_CHANNELS)
-    .map((c) => c.trim())
-    .filter((c) => ALL_CHANNELS.includes(c));
-  if (channels.length === 0) channels.push(...ALL_CHANNELS);
+  const channels = [
+    ...new Set(
+      (raw ? raw.split(",") : CORE_CHANNELS)
+        .map((c) => c.trim().toLowerCase())
+        .filter((c) => VALID_CHANNEL.test(c)),
+    ),
+  ];
+  if (channels.length === 0) channels.push(...CORE_CHANNELS);
 
   const now = Date.now();
   const ttl = Math.floor(now / 1000) + CONN_TTL_SECONDS;

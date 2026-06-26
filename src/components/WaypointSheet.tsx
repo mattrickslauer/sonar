@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CHANNEL_MAP } from "@/lib/channels";
+import { channelMeta } from "@/lib/channels";
 import { formatAge, formatDistance } from "@/lib/geo";
 import { MEDIA_ICON, Waypoint, shareUrl } from "@/lib/waypoints";
 
@@ -28,7 +28,7 @@ export default function WaypointSheet({
   currentUserId,
   onManage,
 }: Props) {
-  const ch = CHANNEL_MAP[wp.channel];
+  const ch = channelMeta(wp.channel);
   // wp.love is kept authoritative (optimistically adjusted on love/unlove).
   const loveCount = wp.love;
   // The signed-in user owns this permanent pin → offer the management console.

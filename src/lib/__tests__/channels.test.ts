@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { CHANNELS, CHANNEL_MAP, type ChannelId } from "../channels";
 
-const EXPECTED_IDS: ChannelId[] = ["events", "food", "music", "social", "safety"];
+const EXPECTED_IDS: ChannelId[] = ["general", "events", "food", "music", "social", "safety"];
 
 describe("channel config", () => {
   it("defines exactly the expected channel ids", () => {

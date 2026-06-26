@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CHANNELS, ChannelId } from "@/lib/channels";
+import { Channel, ChannelId } from "@/lib/channels";
 import {
   MediaKind,
   MEDIA_ICON,
@@ -18,13 +18,15 @@ import {
 } from "@/lib/media";
 
 interface Props {
+  /** The channels the user can drop into (public + private they belong to). */
+  channels: Channel[];
   onDrop: (
     channel: ChannelId,
     kind: MediaKind,
     text: string,
     lifespanSeconds: number,
     permanent: boolean,
-    mediaKey?: string,
+    mediaKey: string | undefined,
   ) => void;
   onClose: () => void;
   /** Whether billing is configured on the server. Hides the option when false. */
@@ -45,13 +47,16 @@ const ADD_PROMPT: Record<string, string> = {
 };
 
 export default function DropComposer({
+  channels,
   onDrop,
   onClose,
   billingConfigured = false,
   signedIn = false,
   onRequireSignIn,
 }: Props) {
-  const [channel, setChannel] = useState<ChannelId>("social");
+  const [channel, setChannel] = useState<ChannelId>(
+    () => channels.find((c) => c.id === "social")?.id ?? channels[0]?.id ?? "social",
+  );
   const [kind, setKind] = useState<MediaKind>("text");
   const [text, setText] = useState("");
   const [lifespan, setLifespan] = useState(DEFAULT_LIFESPAN_SECONDS);
@@ -144,11 +149,11 @@ export default function DropComposer({
           channel
         </p>
         <div className="no-scrollbar mb-4 flex gap-2 overflow-x-auto">
-          {CHANNELS.map((ch) => (
+          {channels.map((ch) => (
             <button
               key={ch.id}
               onClick={() => setChannel(ch.id)}
-              className="shrink-0 rounded-full border px-3 py-1.5 text-[13px]"
+              className="flex shrink-0 items-center gap-1 rounded-full border px-3 py-1.5 text-[13px]"
               style={{
                 borderColor: channel === ch.id ? ch.color : "rgba(255,255,255,.12)",
                 background: channel === ch.id ? `${ch.color}22` : "transparent",
@@ -156,6 +161,7 @@ export default function DropComposer({
               }}
             >
               {ch.emoji} {ch.label}
+              {ch.private && <span className="text-[10px] opacity-70">🔒</span>}
             </button>
           ))}
         </div>

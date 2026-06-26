@@ -271,6 +271,43 @@ export class SonarStack extends cdk.Stack {
     });
 
     // ---------------------------------------------------------------------
+    // Locked-channel hourly capacity meter (EventBridge → Lambda)
+    // ---------------------------------------------------------------------
+    // Once per clock hour, report one Stripe metered-usage record per ACTIVE
+    // locked channel with quantity = its current member count (per-member-per-
+    // hour capacity billing). Reads DSQL as admin (member counts + the metered
+    // subscription_item_id) and the Stripe SECRET key from SSM at runtime — that
+    // key never enters git or the template and rotates without a redeploy. (The
+    // webhook needs only the signing secret; this tick calls the Stripe API, so
+    // it needs the secret key.) cron({minute:"0"}) aligns the billed hour to the
+    // yyyymmddhh idempotency key.
+    const stripeSecretKeyParam = "/sonar/stripe/secret-key";
+    const channelMeterTick = makeFn("ChannelMeterTickFn", "channel-meter-tick", {
+      layers: [dsqlLayer],
+      env: {
+        STRIPE_SECRET_PARAM: stripeSecretKeyParam,
+        // Must match the Billing Meter event_name the channel price is backed by.
+        STRIPE_CHANNEL_METER_EVENT:
+          process.env.STRIPE_CHANNEL_METER_EVENT || "sonar_channel_member_hours",
+      },
+    });
+    channelMeterTick.addToRolePolicy(dsqlConnect); // admin DSQL auth
+    table.grantReadWriteData(channelMeterTick); // billed-hour markers
+    channelMeterTick.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "SonarStripeSecretKeyRead",
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${region}:${this.account}:parameter${stripeSecretKeyParam}`,
+        ],
+      }),
+    );
+    new events.Rule(this, "ChannelMeterTickRule", {
+      schedule: events.Schedule.cron({ minute: "0" }),
+      targets: [new targets.LambdaFunction(channelMeterTick)],
+    });
+
+    // ---------------------------------------------------------------------
     // Bot liveness tick (EventBridge → Lambda)
     // ---------------------------------------------------------------------
     // Reads active cells from PRESENCE and tops up quiet ones with templated
@@ -313,6 +350,9 @@ export class SonarStack extends cdk.Stack {
     const wsAuthorizerFn = makeFn("WsAuthorizerFn", "ws-authorizer", {
       env: { SONAR_SESSION_SECRET: sessionSecret },
     });
+    // The authorizer reads channel privacy meta + membership rows to gate
+    // private channels on $connect (TABLE_NAME is already in its env via commonEnv).
+    table.grantReadData(wsAuthorizerFn);
     const wsAuthorizer = new WebSocketLambdaAuthorizer(
       "WsAuthorizer",
       wsAuthorizerFn,
@@ -421,6 +461,12 @@ export class SonarStack extends cdk.Stack {
       description:
         "Register this as a Stripe webhook endpoint; put its signing secret in SSM " +
         stripeWebhookSecretParam,
+    });
+    new cdk.CfnOutput(this, "StripeSecretKeyParam", {
+      value: stripeSecretKeyParam,
+      description:
+        "Put the Stripe SECRET key (sk_…) here as a SecureString for the locked-" +
+        "channel hourly meter (channel-meter-tick) to report usage.",
     });
     new cdk.CfnOutput(this, "WsApiEndpoint", {
       value: wsStage.url,
