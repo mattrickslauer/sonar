@@ -1,5 +1,7 @@
 # Sonar
 
+[![CI](https://github.com/mattrickslauer/sonar/actions/workflows/ci.yml/badge.svg)](https://github.com/mattrickslauer/sonar/actions/workflows/ci.yml)
+
 **The layer where places remember.**
 
 Snapchat is all-ephemeral. Instagram is all-permanent. Sonar is the layer in between — a place has a living memory you can see, hear, and **ask**. Every drop fades in 24 hours, and every like **buys it more time**. The only permanent pins are **sponsored** ones.
@@ -126,6 +128,39 @@ You pay only for what your channel uses — there is no flat fee or seat minimum
 ## Stack
 
 Next.js (v0) · Vercel · Amazon DynamoDB · Amazon Aurora DSQL · Amazon API Gateway (WebSockets) · AWS Lambda · Amazon S3 · CloudFront · Amazon Transcribe · Amazon Bedrock (Claude) · Stripe (sponsorship + usage-based billing)
+
+## Development
+
+**Prerequisites:** Node 20+. (The infra package additionally uses the AWS CDK.)
+
+```bash
+# 1. Install + configure
+npm install
+cp .env.example .env.local   # fill in at least SONAR_SESSION_SECRET (>= 32 chars)
+
+# 2. Run the app
+npm run dev                  # http://localhost:3000
+
+# 3. Quality gates (these are what CI runs)
+npm run lint                 # eslint
+npm run typecheck            # tsc --noEmit
+npm test                     # vitest — pure logic, OTP/session crypto, WS authorizer
+npm run build                # next build
+```
+
+The app runs anonymously with no backend configured; set the `SONAR_*` env vars
+(see `.env.example`) to enable accounts, media, and the live feed.
+
+**Infrastructure** (AWS CDK, in `infra/`):
+
+```bash
+cd infra
+npm ci
+npx tsc --noEmit
+SONAR_SESSION_SECRET=<same-as-app> npx cdk synth   # required: the WS authorizer
+```
+
+CI (`.github/workflows/ci.yml`) runs all of the above on every push and PR.
 
 ## Status
 
