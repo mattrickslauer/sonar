@@ -83,29 +83,34 @@ function offset(origin, meters, bearingDeg) {
   return { lat: (lat2 * 180) / Math.PI, lng: (lng2 * 180) / Math.PI };
 }
 
-// --- bot persona / content pool (mirrors SEEDS in src/lib/waypoints.ts) ------
+// --- bot persona / content pool ----------------------------------------------
+// Every bot drop lands in the always-present `general` channel so the radar is
+// never empty there. The text stays varied (the old per-topic flavor) but the
+// channel is uniform — bots no longer scatter across the five themed channels.
 const POOL = [
-  { channel: "music", kind: "voice", author: "maya", text: "north stage just dropped the headliner set 🔊 it's unreal" },
-  { channel: "food", kind: "photo", author: "deon", text: "birria tacos truck by gate C — line is short rn" },
-  { channel: "social", kind: "text", author: "priya", text: "anyone near the ferris wheel? lost my crew lol" },
-  { channel: "events", kind: "text", author: "sam", text: "silent disco starts in 20 at the grove tent" },
-  { channel: "safety", kind: "text", author: "ops", text: "minor congestion at east exit, use north path" },
-  { channel: "food", kind: "text", author: "lena", text: "vegan bowl spot ran out of tofu, fyi" },
-  { channel: "music", kind: "video", author: "kai", text: "crowd surf moment at main stage 🤘" },
-  { channel: "social", kind: "photo", author: "theo", text: "best sunset spot is the hill behind stage 2" },
-  { channel: "events", kind: "text", author: "nina", text: "art installation lights up at dusk, worth it" },
-  { channel: "food", kind: "photo", author: "marco", text: "fresh lemonade stand, $4, west plaza" },
-  { channel: "music", kind: "text", author: "jules", text: "acoustic set at the cabin tent, super chill vibe" },
-  { channel: "social", kind: "voice", author: "ade", text: "meetup at the flag pole in 10 if anyone's around" },
-  { channel: "safety", kind: "text", author: "ops", text: "water refill station added near south gate" },
-  { channel: "events", kind: "photo", author: "rosa", text: "fireworks confirmed 10pm over the lake" },
-  { channel: "music", kind: "text", author: "finn", text: "bass tent is shaking the ground, come thru" },
-  { channel: "food", kind: "text", author: "ivy", text: "coffee cart restocked oat milk ☕" },
-  { channel: "social", kind: "text", author: "remy", text: "phone charging lockers by info booth, free" },
-  { channel: "events", kind: "video", author: "zoe", text: "drone show rehearsal happening now look up" },
+  { channel: "general", kind: "voice", author: "maya", text: "north stage just dropped the headliner set 🔊 it's unreal" },
+  { channel: "general", kind: "photo", author: "deon", text: "birria tacos truck by gate C — line is short rn" },
+  { channel: "general", kind: "text", author: "priya", text: "anyone near the ferris wheel? lost my crew lol" },
+  { channel: "general", kind: "text", author: "sam", text: "silent disco starts in 20 at the grove tent" },
+  { channel: "general", kind: "text", author: "ops", text: "minor congestion at east exit, use north path" },
+  { channel: "general", kind: "text", author: "lena", text: "vegan bowl spot ran out of tofu, fyi" },
+  { channel: "general", kind: "video", author: "kai", text: "crowd surf moment at main stage 🤘" },
+  { channel: "general", kind: "photo", author: "theo", text: "best sunset spot is the hill behind stage 2" },
+  { channel: "general", kind: "text", author: "nina", text: "art installation lights up at dusk, worth it" },
+  { channel: "general", kind: "photo", author: "marco", text: "fresh lemonade stand, $4, west plaza" },
+  { channel: "general", kind: "text", author: "jules", text: "acoustic set at the cabin tent, super chill vibe" },
+  { channel: "general", kind: "voice", author: "ade", text: "meetup at the flag pole in 10 if anyone's around" },
+  { channel: "general", kind: "text", author: "ops", text: "water refill station added near south gate" },
+  { channel: "general", kind: "photo", author: "rosa", text: "fireworks confirmed 10pm over the lake" },
+  { channel: "general", kind: "text", author: "finn", text: "bass tent is shaking the ground, come thru" },
+  { channel: "general", kind: "text", author: "ivy", text: "coffee cart restocked oat milk ☕" },
+  { channel: "general", kind: "text", author: "remy", text: "phone charging lockers by info booth, free" },
+  { channel: "general", kind: "video", author: "zoe", text: "drone show rehearsal happening now look up" },
 ];
 
-const CHANNELS = ["events", "food", "music", "social", "safety"];
+// The channels the bot considers when measuring per-cell liveness and topping
+// up. Bots post only to `general`, so this is the deficit denominator too.
+const CHANNELS = ["general"];
 
 // Persistent seed media in the media bucket under seed/ (never lifecycle-expired;
 // see infra/lib/sonar-stack.ts). Bot photo/video drops point at these so the

@@ -19,7 +19,7 @@ const CONN_TTL_SECONDS = 2 * 60 * 60; // safety net if $disconnect is missed
 // partition no one publishes to. Private-channel access is enforced upstream by
 // the $connect authorizer (it denies the handshake for non-members), so by the
 // time we run, every requested channel is authorized. Empty → the public core.
-const CORE_CHANNELS = ["events", "food", "music", "social", "safety"];
+const CORE_CHANNELS = ["general", "events", "food", "music", "social", "safety"];
 const VALID_CHANNEL = /^[a-z0-9]{1,16}$/;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }), {

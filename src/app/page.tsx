@@ -72,10 +72,11 @@ export default function Home() {
   // The open channel set (public + private the user belongs to). Seeded with the
   // static core for first paint, then replaced by the live registry.
   const [channels, setChannels] = useState<Channel[]>(CHANNELS);
-  // The channels toggled on in the dock. There is no default set — the bar starts
-  // empty and the user opts in to channels (their picks persist in localStorage,
-  // hydrated in a mount effect below to keep SSR output deterministic). Channels
-  // with live activity in the area surface as off-by-default suggestions.
+  // The channels toggled on in the dock. The always-present `general` channel is
+  // on by default (added by loadVisibleChannels); beyond that the user opts in to
+  // channels (their picks persist in localStorage, hydrated in a mount effect
+  // below to keep SSR output deterministic). Channels with live activity in the
+  // area surface as off-by-default suggestions.
   const [visible, setVisible] = useState<Set<ChannelId>>(() => new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Ids of the waypoints under a tapped cluster; drives the scroll-through menu.
@@ -385,8 +386,8 @@ export default function Home() {
   // What the dock renders: the user's toggled-on channels plus any channel with
   // live activity in the area (count > 0) as an off-by-default suggestion. Driven
   // by `counts`, so as new waypoints arrive over the socket the suggestion list
-  // updates in realtime. With no picks and no nearby activity the bar is empty —
-  // there is deliberately no default set of channels.
+  // updates in realtime. `general` is always toggled on, so the bar is never
+  // empty; other channels need either a pick or nearby activity to appear.
   const dockChannels = useMemo(
     () => channels.filter((ch) => visible.has(ch.id) || (counts[ch.id] ?? 0) > 0),
     [channels, visible, counts]

@@ -26,7 +26,7 @@ const TABLE = process.env.TABLE_NAME;
 const REGION = process.env.AWS_REGION || "us-east-1";
 // The seeded public channels are never gated. Any other channel id is checked
 // against its privacy meta; private ones require a membership row.
-const CORE_CHANNELS = new Set(["events", "food", "music", "social", "safety"]);
+const CORE_CHANNELS = new Set(["general", "events", "food", "music", "social", "safety"]);
 const VALID_CHANNEL = /^[a-z0-9]{1,16}$/;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
