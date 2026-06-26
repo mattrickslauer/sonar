@@ -1,8 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CHANNEL_MAP } from "@/lib/channels";
-import { formatAge } from "@/lib/geo";
+import { synthesizeAnswer } from "@/lib/ask-synth";
 import { Waypoint } from "@/lib/waypoints";
 
 interface Props {
@@ -11,40 +10,36 @@ interface Props {
 }
 
 /**
- * "Ask the place" — in the real product this calls Bedrock (Claude) over the
- * cell's last 24h. Here we synthesise a grounded answer locally from the live
- * waypoints so the interaction is demoable end-to-end.
+ * "Ask the place" — asks Claude Haiku a question grounded in the waypoints the
+ * user can currently see (via POST /api/ask). If the request fails we fall back
+ * to a deterministic local synthesis so the bar always answers something real.
  */
-function synthesize(q: string, waypoints: Waypoint[]): string {
-  const recent = [...waypoints]
-    .sort((a, b) => b.love / (b.minutesAgo + 5) - a.love / (a.minutesAgo + 5))
-    .slice(0, 4);
-  if (!recent.length) return "It's quiet here right now — no signals in the last 24h.";
-
-  const lead = recent[0];
-  const ch = CHANNEL_MAP[lead.channel];
-  const bullets = recent
-    .map((w) => `• ${CHANNEL_MAP[w.channel].emoji} ${w.text} (${formatAge(w.minutesAgo)})`)
-    .join("\n");
-  return `Right now the loudest signal is on ${ch.emoji} ${ch.label}: "${lead.text}". Across the last 24h here:\n${bullets}`;
-}
-
 export default function AskBar({ waypoints, place }: Props) {
   const [q, setQ] = useState("");
   const [answer, setAnswer] = useState<string | null>(null);
   const [thinking, setThinking] = useState(false);
 
-  function ask(text: string) {
+  async function ask(text: string) {
     const query = text.trim();
     if (!query) return;
     setQ(query);
     setThinking(true);
     setAnswer(null);
-    // simulate the model round-trip
-    window.setTimeout(() => {
-      setAnswer(synthesize(query, waypoints));
+    try {
+      const res = await fetch("/api/ask", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: query, place, waypoints }),
+      });
+      if (!res.ok) throw new Error(`ask failed: ${res.status}`);
+      const data = (await res.json()) as { answer?: string };
+      setAnswer(data.answer?.trim() || synthesizeAnswer(waypoints));
+    } catch {
+      // Network/route failure → deterministic local answer so we never dead-end.
+      setAnswer(synthesizeAnswer(waypoints));
+    } finally {
       setThinking(false);
-    }, 750);
+    }
   }
 
   const suggestions = ["What's the vibe?", "Where's the food?", "Shortest line?"];
