@@ -404,6 +404,13 @@ export default function Home() {
     [waypoints, visible, radiusMeters]
   );
 
+  // The top-bar "live" count reflects everything in range, regardless of which
+  // channels are toggled on — it's the total signal nearby, not the filtered view.
+  const inRangeCount = useMemo(
+    () => waypoints.filter((w) => w.meters <= radiusMeters).length,
+    [waypoints, radiusMeters]
+  );
+
   const selected = useMemo(
     () => waypoints.find((w) => w.id === selectedId) ?? null,
     [waypoints, selectedId]
@@ -686,7 +693,7 @@ export default function Home() {
         >
           <TopBar
             place={placeLabel}
-            liveCount={visibleWaypoints.length}
+            liveCount={inRangeCount}
             account={account}
             onAccountClick={() => setClaimOpen(true)}
           />
