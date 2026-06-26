@@ -4,21 +4,31 @@ import { Channel } from "@/lib/channels";
 
 const VISIBLE_KEY = "sonar_channels";
 
+/** The always-on channel: `general` is constantly present, so it is toggled on
+ *  by default and can't be the reason the bar is empty. Other channels surface
+ *  as off-by-default suggestions the user opts in to. */
+const ALWAYS_ON = "general";
+
 /**
- * The channels the user has toggled on, persisted across sessions. There is no
- * default set — Sonar starts with an empty bar and the dock surfaces channels
- * with live activity in the area as off-by-default suggestions the user opts in
- * to. The result is the user's saved selection only.
+ * The channels the user has toggled on, persisted across sessions. Beyond the
+ * always-on `general` channel there is no default set — Sonar starts with just
+ * `general` and the dock surfaces channels with live activity in the area as
+ * off-by-default suggestions the user opts in to. The result is `general` plus
+ * the user's saved selection.
  */
 export function loadVisibleChannels(): string[] {
+  let saved: string[] = [];
   try {
     const raw = localStorage.getItem(VISIBLE_KEY);
-    if (!raw) return [];
-    const ids = JSON.parse(raw);
-    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : [];
+    if (raw) {
+      const ids = JSON.parse(raw);
+      if (Array.isArray(ids)) saved = ids.filter((x): x is string => typeof x === "string");
+    }
   } catch {
-    return [];
+    saved = [];
   }
+  // Always include `general`, de-duped, with `general` first.
+  return [ALWAYS_ON, ...saved.filter((id) => id !== ALWAYS_ON)];
 }
 
 /** Persist the user's toggled-on channels. Best-effort; no-ops if storage fails. */
