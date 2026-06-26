@@ -1,5 +1,5 @@
 {
-  "name": "sonar-scaffold",
+  "name": "mysonar-zone",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -11,7 +11,6 @@
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1065.0",
     "@aws-sdk/client-s3": "^3.1065.0",
-    "@aws-sdk/client-sesv2": "^3.1068.0",
     "@aws-sdk/dsql-signer": "^3.1068.0",
     "@aws-sdk/lib-dynamodb": "^3.1065.0",
     "@aws-sdk/s3-presigned-post": "^3.1065.0",
@@ -19,6 +18,7 @@
     "jose": "^6.2.3",
     "mapbox-gl": "^3.24.0",
     "next": "16.2.7",
+    "nodemailer": "^9.0.1",
     "pg": "^8.21.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
@@ -28,6 +28,7 @@
     "@tailwindcss/postcss": "^4",
     "@types/mapbox-gl": "^3.4.1",
     "@types/node": "^20",
+    "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.20.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",

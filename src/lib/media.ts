@@ -81,11 +81,16 @@ export type MediaCheck = { ok: true } | { ok: false; error: string };
  * Validate a (kind, mime, size) tuple: the MIME must be in the kind's family and
  * the size within the cap. Shared by the browser (before upload) and the upload
  * route (before signing). `size` may be omitted when only type is being checked.
+ *
+ * `maxBytes` overrides the per-kind cap — used to enforce the lifespan-derived
+ * "byte-hour" budget (the longer a drop lives, the smaller it may be). When
+ * omitted, the kind's own cap applies.
  */
 export function validateMedia(
   kind: string,
   mime: string,
   size?: number,
+  maxBytes?: number,
 ): MediaCheck {
   if (!isUploadKind(kind)) {
     return { ok: false, error: "kind must be photo, video, or voice" };
@@ -98,8 +103,10 @@ export function validateMedia(
     if (!Number.isFinite(size) || size <= 0) {
       return { ok: false, error: "empty file" };
     }
-    if (size > limit.maxBytes) {
-      return { ok: false, error: `${kind} too large (max ${limit.label})` };
+    const cap = maxBytes ?? limit.maxBytes;
+    const capLabel = maxBytes != null ? `${Math.round(cap / MB)} MB` : limit.label;
+    if (size > cap) {
+      return { ok: false, error: `too large (max ${capLabel})` };
     }
   }
   return { ok: true };

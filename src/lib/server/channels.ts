@@ -9,18 +9,6 @@ import { query } from "@/lib/server/dsql";
 import { dsqlConfigured } from "@/lib/server/dsql";
 import { CORE_CHANNEL_IDS, normalizeChannelSlug } from "@/lib/channels";
 
-// Random private-channel id alphabet: lowercase alphanumeric so the id satisfies
-// isValidChannelId ([a-z0-9]{1,16}) and keys DynamoDB partitions cleanly.
-const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
-
-/** A random, unguessable 16-char [a-z0-9] channel id for a locked channel. */
-export function randomChannelId(): string {
-  const b = randomBytes(16);
-  let id = "";
-  for (let i = 0; i < 16; i++) id += ID_ALPHABET[b[i] % ID_ALPHABET.length];
-  return id;
-}
-
 /** A random, unguessable URL-safe join-link token (base64url, 16 bytes ≈ 22
  *  chars). Distinct from the channel id — see 009_channel_join_token.sql. */
 export function randomJoinToken(): string {
@@ -146,8 +134,10 @@ async function insertChannel(
 
 /**
  * Search-or-create a PUBLIC channel from a user-entered name. The normalized
- * slug is the id, so re-creating an existing name just joins it. Throws if the
- * name has no usable characters (caller → 400). Invalidates the cache on create.
+ * slug is the id, so re-creating an existing public name just joins it. A name
+ * already claimed by a PRIVATE channel can't be reused publicly (names are
+ * globally unique) → ChannelTakenError. Throws ChannelNameError if the name has
+ * no usable characters (caller → 400). Invalidates the cache on create.
  */
 export async function searchOrCreateChannel(input: {
   rawLabel: string;
@@ -166,24 +156,32 @@ export async function searchOrCreateChannel(input: {
     ownerAccountId: input.ownerAccountId ?? null,
     status: "active",
   });
+  // The slug is already taken by a private channel — don't surface/join it.
+  if (!result.created && result.channel.isPrivate) {
+    throw new ChannelTakenError(`“${id}” is a private channel — choose another name`);
+  }
   if (result.created) invalidateCache();
   return result;
 }
 
 /**
- * Create a LOCKED private channel: a caller-supplied random 16-char id, status
- * 'locked_unpaid' until the Stripe webhook confirms payment. is_private=true so
- * it never appears in public search. Returns the new row.
+ * Create a LOCKED private channel. The normalized slug is the id (same keyspace
+ * as public channels), so the name is reserved globally: status 'locked_unpaid'
+ * until the Stripe webhook confirms payment, is_private=true so it never appears
+ * in public search. If the slug is already taken, throws ChannelTakenError —
+ * EXCEPT when the same owner is re-attempting their own still-unpaid channel, in
+ * which case the existing row is returned so they can resume Checkout.
  */
 export async function createPrivateChannel(input: {
-  id: string;
   label: string;
   ownerAccountId: string;
   emoji?: string;
   color?: string;
 }): Promise<ChannelRow> {
-  const { channel } = await insertChannel({
-    id: input.id,
+  const id = normalizeChannelSlug(input.label);
+  if (!id) throw new ChannelNameError();
+  const { channel, created } = await insertChannel({
+    id,
     label: input.label.trim() || "Private channel",
     emoji: input.emoji ?? "🔒",
     color: input.color ?? "#a855f7",
@@ -191,6 +189,21 @@ export async function createPrivateChannel(input: {
     ownerAccountId: input.ownerAccountId,
     status: "locked_unpaid",
   });
+  if (!created) {
+    const ownerRetry =
+      channel.isPrivate &&
+      channel.status === "locked_unpaid" &&
+      channel.ownerAccountId === input.ownerAccountId;
+    if (!ownerRetry) {
+      throw new ChannelTakenError(
+        channel.isPrivate
+          ? `“${id}” is already taken`
+          : `“${id}” already exists as a public channel`,
+      );
+    }
+    // Same owner, still unpaid → let them resume checkout on the existing row.
+    return channel;
+  }
   invalidateCache();
   return channel;
 }
@@ -280,6 +293,16 @@ export class ChannelNameError extends Error {
   constructor() {
     super("channel name has no usable characters");
     this.name = "ChannelNameError";
+  }
+}
+
+/** Raised when a name is already in use. Channel names are globally unique (the
+ *  normalized slug is the id for BOTH public and private channels), so a name
+ *  claimed privately can't be reused publicly and vice versa — no duplicates. */
+export class ChannelTakenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChannelTakenError";
   }
 }
 

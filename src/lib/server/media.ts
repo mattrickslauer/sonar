@@ -35,9 +35,10 @@ export function mediaConfigured(): boolean {
 }
 
 // Object keys are `media/<channel>/<random>.<ext>`. The channel segment is a
-// lowercase id; the random segment is 16 hex bytes. Validate on read so the
-// view route can't be coerced into signing arbitrary keys.
-const UPLOAD_KEY_RE = /^media\/[a-z]+\/[0-9a-f]{32}\.[a-z0-9]+$/;
+// lowercase slug (letters + digits, matching isValidChannelId); the random
+// segment is 16 hex bytes. Validate on read so the view route can't be coerced
+// into signing arbitrary keys.
+const UPLOAD_KEY_RE = /^media\/[a-z0-9]+\/[0-9a-f]{32}\.[a-z0-9]+$/;
 // Persistent bot seed media (not lifecycle-expired): seed/<kind>/<slug>.<ext>.
 const SEED_KEY_RE = /^seed\/(photo|video|voice)\/[a-z0-9][a-z0-9-]*\.[a-z0-9]+$/;
 
@@ -55,21 +56,26 @@ export interface UploadTicket extends PresignedPost {
 
 /**
  * Mint a presigned POST for a new upload. The returned `fields` must be sent as
- * multipart/form-data form fields ahead of the file. The policy caps size to the
- * kind's limit and pins the content-type, so S3 rejects anything out of bounds.
+ * multipart/form-data form fields ahead of the file. The policy caps size and
+ * pins the content-type, so S3 rejects anything out of bounds.
+ *
+ * `maxBytes` (the lifespan-derived byte-hour budget) tightens the cap below the
+ * kind's hard ceiling, so S3 itself enforces "longer life ⇒ fewer bytes".
  */
 export async function createUpload(
   kind: UploadKind,
   channel: ChannelId,
   contentType: string,
+  maxBytes?: number,
 ): Promise<UploadTicket> {
   const limit = MEDIA_LIMITS[kind];
+  const cap = maxBytes != null ? Math.min(limit.maxBytes, maxBytes) : limit.maxBytes;
   const key = `media/${channel}/${randomBytes(16).toString("hex")}.${extForMime(contentType)}`;
   const { url, fields } = await createPresignedPost(s3, {
     Bucket: BUCKET,
     Key: key,
     Conditions: [
-      ["content-length-range", 1, limit.maxBytes],
+      ["content-length-range", 1, cap],
       ["eq", "$Content-Type", contentType],
     ],
     Fields: { "Content-Type": contentType },

@@ -65,20 +65,86 @@ export function shareUrl(
 }
 
 // Author-selectable lifespans (capped at 24h to keep the feed ephemeral).
-export const LIFESPAN_PRESETS: { label: string; seconds: number }[] = [
-  { label: "15m", seconds: 15 * 60 },
-  { label: "1h", seconds: 60 * 60 },
-  { label: "6h", seconds: 6 * 60 * 60 },
-  { label: "12h", seconds: 12 * 60 * 60 },
-  { label: "24h", seconds: 24 * 60 * 60 },
+//
+// Byte-hour budget: a drop's life governs how many bytes it may carry — the
+// longer it lives, the smaller it must be. The heat `color` runs cool→hot as
+// life grows, so a long-lived drop glows red ("how long it has to burn").
+const LIFE_MB = 1024 * 1024;
+
+export interface LifespanPreset {
+  label: string;
+  seconds: number;
+  /** Max bytes this drop may carry (a single per-drop budget, any media kind). */
+  maxBytes: number;
+  /** Human label for the cap, shown in the composer. */
+  sizeLabel: string;
+  /** Heat color: cool at 15m → hot red at 24h. */
+  color: string;
+}
+
+export const LIFESPAN_PRESETS: LifespanPreset[] = [
+  { label: "15m", seconds: 15 * 60, maxBytes: 50 * LIFE_MB, sizeLabel: "50 MB", color: "#4cc9f0" },
+  { label: "1h", seconds: 60 * 60, maxBytes: 30 * LIFE_MB, sizeLabel: "30 MB", color: "#34e3a0" },
+  { label: "6h", seconds: 6 * 60 * 60, maxBytes: 15 * LIFE_MB, sizeLabel: "15 MB", color: "#f9c74f" },
+  { label: "12h", seconds: 12 * 60 * 60, maxBytes: 8 * LIFE_MB, sizeLabel: "8 MB", color: "#f3722c" },
+  { label: "24h", seconds: 24 * 60 * 60, maxBytes: 3 * LIFE_MB, sizeLabel: "3 MB", color: "#e63946" },
 ];
-export const DEFAULT_LIFESPAN_SECONDS = 24 * 60 * 60;
+export const DEFAULT_LIFESPAN_SECONDS = 15 * 60;
+
+export function lifespanPreset(seconds: number): LifespanPreset | undefined {
+  return LIFESPAN_PRESETS.find((p) => p.seconds === seconds);
+}
+
+/** The byte cap for a chosen lifespan. Unknown lifespans fall back to the most
+ *  permissive cap (the shortest life) so a legit custom span is never blocked. */
+export function maxBytesForLifespan(seconds: number): number {
+  return lifespanPreset(seconds)?.maxBytes ?? LIFESPAN_PRESETS[0].maxBytes;
+}
 
 export function lifespanLabel(seconds: number): string {
   const match = LIFESPAN_PRESETS.find((p) => p.seconds === seconds);
   if (match) return match.label;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   return `${Math.round(seconds / 3600)}h`;
+}
+
+// A drop composed for a locked channel that has to be paid for first: stashed
+// before the Stripe redirect, then posted once we return and the channel goes
+// active. Survives the round-trip in sessionStorage (cleared after it posts or
+// the tab closes). Location is taken from the live position on return.
+const PENDING_DROP_KEY = "sonar_pending_drop";
+
+export interface PendingDrop {
+  channel: ChannelId;
+  kind: MediaKind;
+  text: string;
+  lifespanSeconds: number;
+  mediaKey?: string;
+}
+
+export function stashPendingDrop(d: PendingDrop): void {
+  try {
+    sessionStorage.setItem(PENDING_DROP_KEY, JSON.stringify(d));
+  } catch {
+    /* storage unavailable — the drop just won't survive checkout */
+  }
+}
+
+export function readPendingDrop(): PendingDrop | null {
+  try {
+    const raw = sessionStorage.getItem(PENDING_DROP_KEY);
+    return raw ? (JSON.parse(raw) as PendingDrop) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingDrop(): void {
+  try {
+    sessionStorage.removeItem(PENDING_DROP_KEY);
+  } catch {
+    /* best-effort */
+  }
 }
 
 // Tiny seeded PRNG (mulberry32) so the map is stable across renders.
@@ -237,6 +303,7 @@ export async function uploadMedia(
   file: File,
   channel: ChannelId,
   kind: MediaKind,
+  lifespanSeconds: number,
 ): Promise<string> {
   const init = await fetch("/api/media/upload", {
     method: "POST",
@@ -246,6 +313,7 @@ export async function uploadMedia(
       kind,
       contentType: file.type,
       size: file.size,
+      lifespanSeconds,
     }),
   });
   if (!init.ok) {

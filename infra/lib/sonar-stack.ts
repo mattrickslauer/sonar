@@ -186,6 +186,15 @@ export class SonarStack extends cdk.Stack {
       description: "pg + @aws-sdk/dsql-signer for the DSQL-touching consumers",
     });
 
+    // Layer carrying the Anthropic SDK (Haiku-generated bot captions) and the
+    // SSM client (reads the API key from Parameter Store at runtime) for the
+    // bot-tick liveness Lambda. Neither is bundled in the Node 20 runtime.
+    const anthropicLayer = new lambda.LayerVersion(this, "AnthropicDepsLayer", {
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda", "layers", "anthropic")),
+      compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
+      description: "@anthropic-ai/sdk + @aws-sdk/client-ssm for the bot-tick Lambda",
+    });
+
     const makeFn = (
       name: string,
       dir: string,
@@ -314,8 +323,33 @@ export class SonarStack extends cdk.Stack {
     // bot waypoints. Note: EventBridge rate() min is 1 minute; for the ~45s
     // cadence in the data model the handler should self-reschedule or use a
     // Step Functions Wait loop.
-    const botTick = makeFn("BotTickFn", "bot-tick");
+    // Captions are written fresh each tick by Claude Haiku. The API key lives in
+    // SSM Parameter Store (set out of band, like the Stripe secrets) so it never
+    // enters git or the CloudFormation template and rotates without a redeploy;
+    // the Lambda reads it at runtime and falls back to a static script if it's
+    // missing or the API call fails.
+    // Captions are also grounded in each cell's place: the Lambda reverse-
+    // geocodes the cell center via Mapbox (public NEXT_PUBLIC token, passed
+    // through at synth). Unset → captions still generate, just location-agnostic.
+    const anthropicKeyParam = "/sonar/anthropic/api-key";
+    const botTick = makeFn("BotTickFn", "bot-tick", {
+      layers: [anthropicLayer],
+      env: {
+        ANTHROPIC_API_KEY_PARAM: anthropicKeyParam,
+        MAPBOX_TOKEN:
+          process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? process.env.MAPBOX_TOKEN ?? "",
+      },
+    });
     table.grantReadWriteData(botTick);
+    botTick.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "SonarAnthropicKeyRead",
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${region}:${this.account}:parameter${anthropicKeyParam}`,
+        ],
+      }),
+    );
     new events.Rule(this, "BotTickScheduleRule", {
       schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
       targets: [new targets.LambdaFunction(botTick)],

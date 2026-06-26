@@ -18,6 +18,8 @@ import {
   postUnlove,
   postPresence,
   rawToWaypoint,
+  readPendingDrop,
+  clearPendingDrop,
   MediaKind,
   Waypoint,
   SHARE_WAYPOINT_PARAM,
@@ -188,14 +190,61 @@ export default function Home() {
     const qs = params.toString();
     window.history.replaceState(null, "", window.location.pathname + (qs ? `?${qs}` : ""));
     if (locked !== "success") return;
+    // A drop composed before the redirect waits in storage — arm it so the
+    // effect below posts it once the channel goes active.
+    if (readPendingDrop()) setPendingArmed(true);
     let tries = 0;
     const poll = () => {
       loadChannels();
-      if (++tries < 5) setTimeout(poll, 1500);
+      // Wider window than a plain channel refresh: a stashed drop waits on the
+      // webhook to activate the channel + seed membership before it can post.
+      if (++tries < 8) setTimeout(poll, 1500);
     };
     setTimeout(poll, 1200);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Post the stashed drop once we're back from a locked-channel Checkout and the
+  // channel has activated (it shows up in the user's channel list once the
+  // webhook seeds owner membership). Re-runs as the channel re-poll refreshes
+  // state, so it naturally retries until the post lands.
+  const [pendingArmed, setPendingArmed] = useState(false);
+  const pendingPostingRef = useRef(false);
+  useEffect(() => {
+    if (!pendingArmed || !userId || !center || pendingPostingRef.current) return;
+    const p = readPendingDrop();
+    if (!p) {
+      setPendingArmed(false);
+      return;
+    }
+    // Wait until the locked channel is active + we belong to it.
+    if (!channels.some((c) => c.id === p.channel)) return;
+    pendingPostingRef.current = true;
+    postDrop({
+      channel: p.channel,
+      kind: p.kind,
+      text: p.text,
+      center,
+      anonId: userId,
+      lifespanSeconds: p.lifespanSeconds,
+      mediaKey: p.mediaKey,
+      ref: loadReferrer() ?? undefined,
+    })
+      .then((saved) => {
+        clearPendingDrop();
+        setPendingArmed(false);
+        setWaypoints((prev) =>
+          prev.some((w) => w.id === saved.id) ? prev : [saved, ...prev],
+        );
+        setVisible((prev) => new Set(prev).add(saved.channel));
+        setSelectedId(saved.id);
+        setRecenterSignal((s) => s + 1);
+      })
+      .catch((e) => console.error("pending drop", e))
+      .finally(() => {
+        pendingPostingRef.current = false;
+      });
+  }, [pendingArmed, userId, center, channels]);
 
   // Honor an inbound share link. The link carries the waypoint id, its location
   // (`ll=lat,lng`) and channel (`c`), plus the referrer (`r`). We set it as the
@@ -464,6 +513,33 @@ export default function Home() {
       console.error("createChannel", e);
       alert(e instanceof Error ? e.message : "could not create channel");
     }
+  }
+
+  // Search-or-create a channel for the drop composer. A public channel resolves
+  // to the live channel so the composer can target it immediately (idempotent:
+  // joins an existing slug or creates it), and is surfaced in the dock + toggled
+  // on. A private (locked) channel redirects to Stripe Checkout and is usable
+  // only after payment — so it navigates away and resolves to null.
+  // Throws on failure (e.g. a name already taken → 409) so the composer can
+  // surface the message inline and undo any pending state; returns null only for
+  // the private → Checkout case, where we navigate away.
+  async function resolveChannel(
+    name: string,
+    isPrivate = false,
+  ): Promise<Channel | null> {
+    const res = await createOrJoinChannel({ name, isPrivate, anonId: userId });
+    if (res.url) {
+      window.location.assign(res.url); // locked channel → Checkout
+      return null;
+    }
+    const ch = res.channel;
+    setChannels((prev) => (prev.some((c) => c.id === ch.id) ? prev : [...prev, ch]));
+    setVisible((prev) => {
+      const next = new Set(prev).add(ch.id);
+      saveVisibleChannels([...next]);
+      return next;
+    });
+    return ch;
   }
 
   function love(id: string) {
@@ -780,6 +856,7 @@ export default function Home() {
           <DropComposer
             channels={channels}
             onDrop={drop}
+            onResolveChannel={resolveChannel}
             onClose={() => setComposerOpen(false)}
             billingConfigured={billingConfigured}
             signedIn={!!account}

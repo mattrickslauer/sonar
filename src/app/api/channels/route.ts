@@ -15,8 +15,8 @@ import {
   searchOrCreateChannel,
   createPrivateChannel,
   getChannel,
-  randomChannelId,
   ChannelNameError,
+  ChannelTakenError,
 } from "@/lib/server/channels";
 import { listMyPrivateChannelIds, putChannelMeta } from "@/lib/server/membership";
 import { createChannelCheckout } from "@/lib/server/channel-billing";
@@ -104,14 +104,25 @@ export async function POST(request: Request) {
     const account = await getAccountById(session.sub);
     if (!account) return Response.json({ error: "account not found" }, { status: 404 });
 
-    const id = randomChannelId();
-    const channel = await createPrivateChannel({
-      id,
-      label: name,
-      ownerAccountId: account.id,
-      emoji,
-      color,
-    });
+    let channel: ChannelRow;
+    try {
+      channel = await createPrivateChannel({
+        label: name,
+        ownerAccountId: account.id,
+        emoji,
+        color,
+      });
+    } catch (err) {
+      // Name globally unique: already taken (publicly or privately) → 409.
+      if (err instanceof ChannelTakenError) {
+        return Response.json({ error: err.message }, { status: 409 });
+      }
+      if (err instanceof ChannelNameError) {
+        return Response.json({ error: "channel name has no usable characters" }, { status: 400 });
+      }
+      throw err;
+    }
+    const id = channel.id;
     await putChannelMeta(id, true); // so the WS authorizer knows it's private
     const url = await createChannelCheckout(account, id, request);
     if (!url) return Response.json({ error: "could not start checkout" }, { status: 502 });
@@ -138,6 +149,10 @@ export async function POST(request: Request) {
     });
     return Response.json({ channel: toClient(channel), created }, { status: created ? 201 : 200 });
   } catch (err) {
+    // A name already claimed by a private channel can't be reused publicly.
+    if (err instanceof ChannelTakenError) {
+      return Response.json({ error: err.message }, { status: 409 });
+    }
     if (err instanceof ChannelNameError) {
       return Response.json({ error: "channel name has no usable characters" }, { status: 400 });
     }
