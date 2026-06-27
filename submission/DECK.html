@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sonar — H0 Hackathon Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#05070a; --fg:#e6f0ee; --sonar:#34e3a0; --dim:#1b8c63;
+    --grid:rgba(52,227,160,.16); --muted:#8aa39a;
+    --events:#f5a524; --food:#fb7185; --music:#a855f7; --social:#22d3ee; --safety:#ef4444;
+    --sans:"Geist",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--fg); font-family:var(--sans);
+    overflow:hidden; -webkit-font-smoothing:antialiased;
+  }
+  /* faint radar grid over everything */
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:64px 64px; opacity:.5;
+    -webkit-mask-image:radial-gradient(circle at 50% 45%,#000 30%,transparent 80%);
+            mask-image:radial-gradient(circle at 50% 45%,#000 30%,transparent 80%);
+  }
+  .deck{position:relative;z-index:1;height:100vh;width:100vw}
+  .slide{
+    position:absolute; inset:0; display:none; flex-direction:column;
+    justify-content:center; padding:8vh 9vw; animation:fade .35s ease;
+  }
+  .slide.active{display:flex}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  .kicker{font-family:var(--mono);font-size:.82rem;letter-spacing:.22em;text-transform:uppercase;color:var(--sonar);margin-bottom:1.1rem}
+  h1{font-size:clamp(2.4rem,6vw,5rem);font-weight:600;letter-spacing:-.03em;line-height:1.02}
+  h2{font-size:clamp(1.8rem,3.6vw,3rem);font-weight:600;letter-spacing:-.02em;line-height:1.08;margin-bottom:1.6rem}
+  p,li{font-size:clamp(1rem,1.5vw,1.4rem);line-height:1.5;color:#cfe0db;max-width:60ch}
+  strong{color:var(--fg);font-weight:600}
+  .sonar{color:var(--sonar)}
+  .lead{font-size:clamp(1.2rem,2.2vw,1.9rem);color:#cfe0db;max-width:30ch}
+  .big{font-size:clamp(1.6rem,3vw,2.6rem);line-height:1.2;font-weight:500;max-width:24ch}
+  ul{list-style:none;display:flex;flex-direction:column;gap:1rem;margin-top:.5rem}
+  ul li{position:relative;padding-left:1.7rem}
+  ul li::before{content:"";position:absolute;left:0;top:.62em;width:10px;height:10px;border-radius:50%;background:var(--sonar);box-shadow:0 0 12px var(--sonar)}
+  .mono{font-family:var(--mono)}
+  code{font-family:var(--mono);background:rgba(52,227,160,.1);border:1px solid rgba(52,227,160,.25);color:var(--sonar);padding:.12em .45em;border-radius:6px;font-size:.85em}
+  .muted{color:var(--muted)}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:3.5vw;align-items:start}
+  .card{border:1px solid rgba(52,227,160,.22);border-radius:16px;padding:1.6rem 1.7rem;background:rgba(52,227,160,.04)}
+  .card h3{font-size:1.4rem;font-weight:600;margin-bottom:.7rem;display:flex;align-items:center;gap:.6rem}
+  .card .tag{font-family:var(--mono);font-size:.7rem;letter-spacing:.15em;text-transform:uppercase;color:var(--bg);background:var(--sonar);padding:.25em .6em;border-radius:999px}
+  .card ul{gap:.6rem;margin-top:.3rem}
+  .card li{font-size:1.02rem;padding-left:1.4rem}
+  .card li::before{width:7px;height:7px;top:.55em}
+
+  /* cover ping */
+  .ping{position:relative;width:160px;height:160px;margin-bottom:2.4rem}
+  .ping .ring{position:absolute;inset:0;border-radius:50%;border:2px solid var(--sonar);opacity:0;animation:pingexp 3.2s ease-out infinite}
+  .ping .ring:nth-child(2){animation-delay:1.06s}
+  .ping .ring:nth-child(3){animation-delay:2.13s}
+  .ping .dot{position:absolute;top:50%;left:50%;width:34px;height:34px;margin:-17px;border-radius:50%;background:var(--sonar);box-shadow:0 0 50px 8px var(--sonar)}
+  .ping .core{position:absolute;top:50%;left:50%;width:104px;height:104px;margin:-52px;border-radius:50%;border:9px solid var(--sonar)}
+  @keyframes pingexp{0%{transform:scale(.35);opacity:.8}80%,100%{transform:scale(2.3);opacity:0}}
+
+  /* architecture diagram */
+  .arch{display:flex;flex-direction:column;gap:.9rem;width:100%;max-width:1000px;margin-top:.5rem}
+  .arch .row{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap}
+  .node{border:1px solid rgba(52,227,160,.3);border-radius:12px;padding:.85rem 1.1rem;background:rgba(52,227,160,.05);min-width:150px;text-align:center}
+  .node .t{font-weight:600;font-size:1.02rem}
+  .node .s{font-family:var(--mono);font-size:.72rem;color:var(--muted);margin-top:.25rem;letter-spacing:.04em}
+  .node.db{border-color:var(--sonar);background:rgba(52,227,160,.12)}
+  .arrow{text-align:center;color:var(--dim);font-family:var(--mono);font-size:1.2rem;line-height:1}
+  .chips{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1.2rem}
+  .chip{font-family:var(--mono);font-size:.78rem;border:1px solid rgba(255,255,255,.15);border-radius:999px;padding:.35em .85em;color:#cfe0db}
+  .ch-events{color:var(--events);border-color:var(--events)}
+  .ch-food{color:var(--food);border-color:var(--food)}
+  .ch-music{color:var(--music);border-color:var(--music)}
+  .ch-social{color:var(--social);border-color:var(--social)}
+  .ch-safety{color:var(--safety);border-color:var(--safety)}
+
+  .footer{position:fixed;bottom:2.6vh;left:9vw;right:9vw;display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:.74rem;letter-spacing:.12em;color:var(--muted);z-index:2}
+  .footer .dot{width:8px;height:8px;border-radius:50%;background:var(--sonar);display:inline-block;margin-right:.5em;box-shadow:0 0 10px var(--sonar)}
+  .nav{position:fixed;bottom:2vh;left:50%;transform:translateX(-50%);display:flex;gap:.4rem;z-index:3}
+  .nav button{background:rgba(52,227,160,.1);border:1px solid rgba(52,227,160,.3);color:var(--sonar);font-family:var(--mono);border-radius:8px;padding:.3rem .7rem;cursor:pointer;font-size:.8rem}
+  .nav button:hover{background:rgba(52,227,160,.2)}
+  .quote{font-size:clamp(1.4rem,2.6vw,2.2rem);line-height:1.25;font-weight:500;max-width:24ch;border-left:3px solid var(--sonar);padding-left:1.4rem}
+
+  /* print → one slide per page for PDF export */
+  @media print{
+    @page{size:1280px 720px;margin:0}
+    body::before{-webkit-mask-image:none;mask-image:none;opacity:.25}
+    .nav{display:none}
+    .deck{height:auto}
+    .slide{display:flex!important;position:relative;page-break-after:always;height:720px;width:1280px;animation:none}
+  }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+  <!-- 1 · COVER -->
+  <section class="slide active" style="align-items:center;text-align:center">
+    <div class="ping"><span class="ring"></span><span class="ring"></span><span class="ring"></span><span class="core"></span><span class="dot"></span></div>
+    <h1>Sonar</h1>
+    <p class="lead" style="margin:1.2rem auto 0">The layer where places remember.</p>
+    <div class="chips" style="justify-content:center;margin-top:2.2rem">
+      <span class="chip">H0 · Track 3 — Million-scale</span>
+      <span class="chip sonar">live · mysonar.zone</span>
+      <span class="chip">DynamoDB + Aurora DSQL · Vercel</span>
+    </div>
+  </section>
+
+  <!-- 2 · PROBLEM -->
+  <section class="slide">
+    <div class="kicker">The problem</div>
+    <h2>Every feed forces one time horizon.</h2>
+    <div class="two">
+      <div>
+        <p><strong>Snapchat</strong> forgets everything.<br><strong>Instagram</strong> forgets nothing.<br>But a <strong class="sonar">place</strong> is neither.</p>
+      </div>
+      <div>
+        <p>A festival, a campus, a downtown block has a <strong>living memory of right now</strong>. The one question nobody's feed answers:</p>
+        <p class="big sonar" style="margin-top:1rem">"Is it worth going over there, right now?"</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 · WHAT IT IS -->
+  <section class="slide">
+    <div class="kicker">What it is</div>
+    <h2>A live radar of what's happening around you.</h2>
+    <ul>
+      <li>Drop a <strong>waypoint</strong> — note, photo, video, or 15-sec voice — onto a channel.</li>
+      <li>It streams in <strong>live</strong>, ranked by <strong>proximity + freshness</strong>, and <strong>expires in 24 hours</strong>.</li>
+      <li>Channels are real-time, geo-scoped topics you subscribe to.</li>
+    </ul>
+    <div class="chips">
+      <span class="chip ch-events">🎪 Events</span>
+      <span class="chip ch-food">🍔 Food</span>
+      <span class="chip ch-music">🎶 Music</span>
+      <span class="chip ch-social">💬 Social</span>
+      <span class="chip ch-safety">🛟 Safety</span>
+    </div>
+  </section>
+
+  <!-- 4 · THE TWIST -->
+  <section class="slide">
+    <div class="kicker">The twist</div>
+    <h2>Likes buy time. Sponsors buy permanence.</h2>
+    <div class="two">
+      <div class="card">
+        <h3>⏱ Likes buy time</h3>
+        <p>Every like adds <strong class="sonar">+5 minutes</strong> to a drop's countdown — uncapped. The crowd keeps the good stuff alive, minute by minute. Nothing user-posted is ever permanent.</p>
+      </div>
+      <div class="card">
+        <h3>◆ Sponsors buy permanence</h3>
+        <p>The <strong>only</strong> pins that never expire are <strong>sponsored</strong> — a paid waypoint carrying the sponsor's name. That's the revenue line, on real billing.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 · ASK THE PLACE -->
+  <section class="slide">
+    <div class="kicker">The intelligence</div>
+    <h2>Ask the place.</h2>
+    <p>AI summarizes and answers questions over a location's last 24 hours.</p>
+    <p class="big" style="margin:1rem 0">"What's the vibe at the north stage?"<br><span class="muted">"Where's the shortest food line?"</span></p>
+    <p class="quote sonar">A geofence + a 24-hour window bound every query small enough for one model call — so there's <strong>no vector database</strong>.</p>
+  </section>
+
+  <!-- 6 · ARCHITECTURE -->
+  <section class="slide">
+    <div class="kicker">Architecture · polyglot, all-serverless</div>
+    <h2 style="margin-bottom:1rem">Two AWS databases, each for its access pattern.</h2>
+    <div class="arch">
+      <div class="row"><div class="node"><div class="t">Next.js on Vercel</div><div class="s">mobile-first radar UI</div></div></div>
+      <div class="arrow">▼ &nbsp; REST + WebSocket &nbsp; ▼</div>
+      <div class="row">
+        <div class="node"><div class="t">API GW WebSockets</div><div class="s">+ Lambda authorizer</div></div>
+        <div class="node"><div class="t">S3 + CloudFront</div><div class="s">media blobs · signed-URL CDN</div></div>
+        <div class="node"><div class="t">Amazon Bedrock (Claude)</div><div class="s">ask the place</div></div>
+      </div>
+      <div class="arrow">▼</div>
+      <div class="row">
+        <div class="node db"><div class="t">DynamoDB</div><div class="s">geohash PK · TTL · Streams · on-demand</div></div>
+        <div class="node db"><div class="t">Aurora DSQL</div><div class="s">accounts · billing · analytics · IAM auth</div></div>
+      </div>
+      <div class="arrow"><span class="muted mono" style="font-size:.8rem">DynamoDB Streams → Lambda → live fan-out + billing rollups → DSQL</span></div>
+    </div>
+  </section>
+
+  <!-- 7 · DYNAMODB -->
+  <section class="slide">
+    <div class="kicker">Why DynamoDB · the radar</div>
+    <h2>The high-write ephemeral path.</h2>
+    <ul>
+      <li><strong>Geohash partition keys</strong> — <code>PK = CH#&lt;channel&gt;#GEO#&lt;geohash6&gt;</code>. "What's near me" = query my cell + 8 neighbors. No scan, ever.</li>
+      <li><strong>TTL is the business logic</strong> — 24h expiry is native TTL; "likes buy time" is an atomic <code>ADD ttl 300</code>. <span class="sonar">The feature is written into the storage layer.</span></li>
+      <li><strong>Streams</strong> fan drops out to subscribers and roll usage up for billing — the DB emits the events; we don't poll.</li>
+      <li><strong>On-demand</strong> — absorbs a 30k-person write storm with zero provisioning.</li>
+    </ul>
+  </section>
+
+  <!-- 8 · DSQL -->
+  <section class="slide">
+    <div class="kicker">Why Aurora DSQL · the record</div>
+    <h2>The relational system-of-record.</h2>
+    <ul>
+      <li><strong>Serverless, scale-to-zero</strong> — saves ~$88/mo of idle compute vs. Aurora Serverless v2. Right tool <em>and</em> right economics.</li>
+      <li><strong>Several deliberate jobs</strong> — accounts (canonical userId), subscriptions/sponsorships, billing &amp; analytics rollups.</li>
+      <li><strong>IAM-native auth</strong> — DSQL Signer, no passwords, tokens rotate ~15 min.</li>
+      <li><strong>Least privilege</strong> — app role <code>sonar_app</code>: SELECT/INSERT/UPDATE only, no DELETE/DDL.</li>
+    </ul>
+  </section>
+
+  <!-- 9 · CLINCHER -->
+  <section class="slide" style="align-items:center;text-align:center">
+    <div class="kicker">The decision we're proudest of</div>
+    <p class="quote sonar" style="border:none;text-align:center;padding:0;max-width:30ch">The data model <strong>is</strong> the scaling strategy.</p>
+    <p style="margin-top:1.6rem;max-width:50ch">Geohash keys make geo queries O(1). TTL makes ephemerality free. A bounded context deletes the vector database. We picked each store for its access pattern — not the other way around.</p>
+  </section>
+
+  <!-- 10 · WHY IT WINS -->
+  <section class="slide">
+    <div class="kicker">Mapped to the judging criteria</div>
+    <h2>Why it wins.</h2>
+    <div class="two" style="gap:1.4rem 3.5vw">
+      <div class="card"><h3>⚙ Technological</h3><p>Polyglot, all-serverless. The marquee feature implemented <em>as</em> a TTL mutation. Streams-driven, no polling.</p></div>
+      <div class="card"><h3>◷ Design</h3><p>Mobile-first radar UI; one green signal on a dark field; channels as a categorical identity. Front-end designed to the back-end.</p></div>
+      <div class="card"><h3>◎ Impact</h3><p>Answers a universal question at any dense place. Live, with a real cost model (~$24/mo at ~10K MAU).</p></div>
+      <div class="card"><h3>✦ Originality</h3><p>Likes-buy-time, sponsored permanence, conversational access to a place's recent past — and no vector DB.</p></div>
+    </div>
+  </section>
+
+  <!-- 11 · SHIPPABLE -->
+  <section class="slide">
+    <div class="kicker">Shippable, not a demo</div>
+    <h2>It's live right now.</h2>
+    <ul>
+      <li><strong class="sonar">mysonar.zone</strong> — serving production traffic on Vercel + AWS today.</li>
+      <li>All infra is <strong>one AWS CDK stack</strong> — a fresh environment is one <code>cdk deploy</code> + migrations.</li>
+      <li><strong>No fixed capacity</strong> to exhaust, <strong>no idle compute</strong> to pay for — the serverless stack is the scaling story.</li>
+      <li>Gap to a paid venue go-live is operational hardening, not a rebuild.</li>
+    </ul>
+  </section>
+
+  <!-- 12 · CLOSE -->
+  <section class="slide" style="align-items:center;text-align:center">
+    <div class="ping" style="width:120px;height:120px"><span class="ring"></span><span class="ring"></span><span class="core" style="width:78px;height:78px;margin:-39px;border-width:7px"></span><span class="dot" style="width:26px;height:26px;margin:-13px"></span></div>
+    <h1 style="font-size:clamp(2rem,5vw,4rem)">Sonar</h1>
+    <p class="lead" style="margin:1rem auto 0">The layer where places remember.</p>
+    <div class="chips" style="justify-content:center;margin-top:2rem"><span class="chip sonar">mysonar.zone</span><span class="chip">DynamoDB · Aurora DSQL · Vercel</span></div>
+  </section>
+
+</div>
+
+<div class="footer">
+  <span><span class="dot"></span>SONAR — THE LAYER WHERE PLACES REMEMBER</span>
+  <span id="counter">01 / 12</span>
+</div>
+<div class="nav">
+  <button onclick="go(-1)">← prev</button>
+  <button onclick="go(1)">next →</button>
+</div>
+
+<script>
+  const slides=[...document.querySelectorAll('.slide')];
+  let i=0;
+  const counter=document.getElementById('counter');
+  function show(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    counter.textContent=String(i+1).padStart(2,'0')+' / '+String(slides.length).padStart(2,'0');
+    location.hash=i+1;
+  }
+  function go(d){show(i+d)}
+  addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){e.preventDefault();go(1)}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();go(-1)}
+    else if(e.key==='Home'){show(0)} else if(e.key==='End'){show(slides.length-1)}
+  });
+  // swipe (touch)
+  let x0=null;
+  addEventListener('touchstart',e=>x0=e.touches[0].clientX,{passive:true});
+  addEventListener('touchend',e=>{if(x0===null)return;const dx=e.changedTouches[0].clientX-x0;if(Math.abs(dx)>50)go(dx<0?1:-1);x0=null},{passive:true});
+  const start=parseInt(location.hash.slice(1));show(Number.isInteger(start)&&start>0?start-1:0);
+</script>
+</body>
+</html>
