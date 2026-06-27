@@ -12,9 +12,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.31.0",
     "@anthropic-ai/sdk": "^0.106.0",
     "@aws-sdk/client-dynamodb": "^3.1065.0",
     "@aws-sdk/client-s3": "^3.1065.0",
+    "@aws-sdk/cloudfront-signer": "^3.1074.0",
     "@aws-sdk/dsql-signer": "^3.1068.0",
     "@aws-sdk/lib-dynamodb": "^3.1065.0",
     "@aws-sdk/s3-presigned-post": "^3.1065.0",

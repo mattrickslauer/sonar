@@ -3,8 +3,11 @@
 // Uploads use a presigned POST (not a presigned PUT): the POST policy lets us
 // pin BOTH the content-type and a content-length-range, so S3 itself rejects
 // oversized or wrong-type blobs — the browser never gets to push past the cap.
-// Reads use a short-lived presigned GET behind /api/media/view (the bucket
-// blocks all public access).
+// Reads go behind /api/media/view as a short-lived signed URL. When a
+// CloudFront CDN is configured (SONAR_CDN_DOMAIN + key pair) reads are served
+// from the edge via a CloudFront *signed URL*; otherwise they fall back to a
+// presigned S3 GET. Either way the bucket blocks all public access and the URL
+// is a short-lived, access-gated capability — the route gates first, then signs.
 //
 // Credentials follow the same SONAR_-prefixed convention as the DynamoDB client
 // (see src/lib/server/waypoints.ts): explicit creds in hosted envs, default
@@ -13,11 +16,20 @@ import { randomBytes } from "node:crypto";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { createPresignedPost, PresignedPost } from "@aws-sdk/s3-presigned-post";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { getSignedUrl as getCloudFrontSignedUrl } from "@aws-sdk/cloudfront-signer";
 import { ChannelId } from "@/lib/channels";
 import { UploadKind, MEDIA_LIMITS, extForMime } from "@/lib/media";
 
 const REGION = process.env.SONAR_REGION ?? process.env.AWS_REGION ?? "us-east-1";
 const BUCKET = process.env.SONAR_MEDIA_BUCKET ?? "";
+
+// CloudFront media CDN (optional). All three must be set to serve reads from the
+// edge; the private key is sometimes stored with literal "\n" escapes in env
+// stores, so normalize them back to real newlines for the PEM parser.
+const CDN_DOMAIN = process.env.SONAR_CDN_DOMAIN;
+const CF_KEY_PAIR_ID = process.env.SONAR_CF_KEY_PAIR_ID;
+const CF_PRIVATE_KEY = process.env.SONAR_CF_PRIVATE_KEY?.replace(/\\n/g, "\n");
+const cdnConfigured = !!(CDN_DOMAIN && CF_KEY_PAIR_ID && CF_PRIVATE_KEY);
 
 const accessKeyId = process.env.SONAR_AWS_ACCESS_KEY_ID;
 const secretAccessKey = process.env.SONAR_AWS_SECRET_ACCESS_KEY;
@@ -84,8 +96,21 @@ export async function createUpload(
   return { key, url, fields };
 }
 
-/** A short-lived presigned GET URL for reading a media object. */
+/**
+ * A short-lived signed URL for reading a media object. Served from the
+ * CloudFront edge (signed URL) when the CDN is configured, else a presigned S3
+ * GET. Callers must gate access to `key` before calling this — the URL is a
+ * time-boxed capability, not an authorization check.
+ */
 export async function viewUrl(key: string): Promise<string> {
+  if (cdnConfigured) {
+    return getCloudFrontSignedUrl({
+      url: `https://${CDN_DOMAIN}/${key}`,
+      keyPairId: CF_KEY_PAIR_ID!,
+      privateKey: CF_PRIVATE_KEY!,
+      dateLessThan: new Date(Date.now() + VIEW_EXPIRY_SECONDS * 1000).toISOString(),
+    });
+  }
   return getSignedUrl(
     s3,
     new GetObjectCommand({ Bucket: BUCKET, Key: key }),

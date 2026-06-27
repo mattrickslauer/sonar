@@ -62,7 +62,7 @@ Subscribing opens a real-time scope; new waypoints on that channel are pushed li
                                              ▼
                      ┌──────────────────────────────────────────┐
    ask the place ───►│                 DynamoDB                  │
-   Transcribe +      │ waypoints (geohash PK · TTL +5min/like)   │
+   via Amazon        │ waypoints (geohash PK · TTL +5min/like)   │
    Bedrock (Claude)  │  channel membership · usage metering      │
                      └────────────────────┬─────────────────────┘
                                           │ Streams → Lambda
@@ -86,8 +86,8 @@ Subscribing opens a real-time scope; new waypoints on that channel are pushed li
 - **DynamoDB** — high-write ephemeral path. Geohash partition keys for geo queries, TTL for expiry (24h base, **extended +5 min on every like**; **sponsored pins use a far-future TTL so they never expire**), atomic counters (love + metering), Streams to drive live fan-out and billing rollups. Also holds channel membership and raw usage-metering records. Sponsored permanent waypoints live here too, on their geo cell, so they show on the radar.
 - **API Gateway (WebSockets) + Lambda authorizer** — real-time delivery. Clients subscribe to channel scopes; the authorizer gates private channels to members. Connect / message / disconnect events are the metered units.
 - **Aurora DSQL** — serverless, scale-to-zero, Postgres-compatible relational store doing triple duty: the **sponsorships** record (who paid for which permanent pin, and for how long), the workplace **analytics/BI** dashboard, and the **billing system-of-record** for both revenue lines (sponsorships + private-channel usage; accounts, channels, invoices).
-- **S3 + CloudFront** — all media. Presigned uploads, CDN delivery. (Media never lives in DynamoDB — 400 KB item cap.)
-- **Amazon Transcribe + Bedrock (Claude)** — voice → text → "ask the place" summary / Q&A.
+- **Amazon S3 + CloudFront** — all media. Presigned uploads to a fully private S3 bucket; reads are served from the **CloudFront** edge (Origin Access Control) via short-lived **signed URLs**, so private-channel media stays gated and expiring. (Media never lives in DynamoDB — 400 KB item cap.)
+- **Amazon Bedrock (Claude Haiku 4.5)** — "ask the place" summary / Q&A over a location's recent drops, authenticated with the same IAM identity as the data layer.
 - **Stripe** — billing for both lines: **sponsorships** (paid permanent pins) and **private-channel usage** (metered), fed by the DSQL records/rollups.
 
 > **No vector database.** Geofencing plus a 24-hour window bound every AI query's context small enough to answer in a single model call — the data model does the scaling.
@@ -96,7 +96,7 @@ Subscribing opens a real-time scope; new waypoints on that channel are pushed li
 
 | Pattern | Design |
 |---|---|
-| Drop a waypoint | `PK = CH#<channel>#GEO#<geohash6>`, `SK = WP#<ts>#<id>` |
+| Drop a waypoint | `PK = CH#<channel>#GEO#<geohash6>`, `SK = WP#<ulid>` (ULID = time-sortable id) |
 | What's near me | Query my geohash + 8 neighbors, merge, rank by proximity + freshness |
 | Subscribe to a channel | WebSocket `subscribe`; authorizer checks membership for private channels |
 | Live update | Streams → Lambda → push to the channel's subscribers in range |
@@ -108,7 +108,7 @@ Subscribing opens a real-time scope; new waypoints on that channel are pushed li
 
 ### Region
 
-All resources run in **`us-east-1`** (DynamoDB, Aurora DSQL, API Gateway, Lambda, S3, Transcribe; CloudFront is global) — co-located, and the region where Claude on Bedrock is available on-demand.
+All resources run in **`us-east-1`** (DynamoDB, Aurora DSQL, API Gateway, Lambda, S3, Bedrock; CloudFront is global) — co-located, and the region where Claude on Bedrock is available on-demand.
 
 ---
 
@@ -127,7 +127,7 @@ You pay only for what your channel uses — there is no flat fee or seat minimum
 
 ## Stack
 
-Next.js (v0) · Vercel · Amazon DynamoDB · Amazon Aurora DSQL · Amazon API Gateway (WebSockets) · AWS Lambda · Amazon S3 · CloudFront · Amazon Transcribe · Amazon Bedrock (Claude) · Stripe (sponsorship + usage-based billing)
+Next.js (v0) · Vercel · Amazon DynamoDB · Amazon Aurora DSQL · Amazon API Gateway (WebSockets) · AWS Lambda · Amazon S3 · CloudFront · Amazon Bedrock (Claude) · Stripe (sponsorship + usage-based billing)
 
 ## Development
 

@@ -1,26 +1,46 @@
 // "Ask the place" — answers a free-text question about a place using Claude
-// Haiku, grounded strictly in the live waypoints the caller can currently see.
-// Mirrors the bot-tick Lambda's posture: the Anthropic key is optional, and any
-// failure (no key, API error, empty completion) degrades to a deterministic
-// local synthesis so the interaction always returns a real, grounded answer.
-import Anthropic from "@anthropic-ai/sdk";
+// Haiku 4.5 on **Amazon Bedrock**, grounded strictly in the live waypoints the
+// caller can currently see. The Bedrock client authenticates with the same
+// SONAR_-prefixed IAM identity the DynamoDB / DSQL / S3 clients use (no separate
+// API key), so the AI runs inside the same AWS account as the data layer. Any
+// failure (no credentials, model-access not enabled, API error, empty
+// completion) degrades to a deterministic local synthesis so the interaction
+// always returns a real, grounded answer.
+import AnthropicBedrock from "@anthropic-ai/bedrock-sdk";
 import { channelMeta } from "@/lib/channels";
 import { rankWaypoints, synthesizeAnswer } from "@/lib/ask-synth";
 import { Waypoint } from "@/lib/waypoints";
 
-const MODEL = "claude-haiku-4-5";
+const REGION = process.env.SONAR_REGION ?? process.env.AWS_REGION ?? "us-east-1";
+// Bedrock model id. Haiku 4.5 is served through a cross-region inference
+// profile; "us." pins routing to US regions (co-located with the rest of the
+// stack in us-east-1). Override with SONAR_BEDROCK_MODEL (e.g. a "global."
+// profile) without a code change.
+const MODEL =
+  process.env.SONAR_BEDROCK_MODEL ??
+  "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 const MAX_WAYPOINTS = 12; // bound the prompt: most-prominent signals only
 const MAX_TEXT = 140; // truncate each drop so a single loud post can't blow the budget
 
-let client: Anthropic | null = null;
-function getClient(): Anthropic | null {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
-  if (!client) client = new Anthropic(); // reads ANTHROPIC_API_KEY from env
+const accessKeyId = process.env.SONAR_AWS_ACCESS_KEY_ID;
+const secretAccessKey = process.env.SONAR_AWS_SECRET_ACCESS_KEY;
+
+let client: AnthropicBedrock | null = null;
+function getClient(): AnthropicBedrock | null {
+  if (!accessKeyId || !secretAccessKey) return null;
+  if (!client) {
+    client = new AnthropicBedrock({
+      awsAccessKey: accessKeyId,
+      awsSecretKey: secretAccessKey,
+      awsSessionToken: process.env.SONAR_AWS_SESSION_TOKEN,
+      awsRegion: REGION,
+    });
+  }
   return client;
 }
 
 export function askConfigured(): boolean {
-  return !!process.env.ANTHROPIC_API_KEY;
+  return !!(accessKeyId && secretAccessKey);
 }
 
 export interface AskResult {
@@ -66,14 +86,14 @@ export async function askPlace(opts: {
       ],
     });
     const answer = resp.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .filter((b): b is Extract<typeof b, { type: "text" }> => b.type === "text")
       .map((b) => b.text)
       .join("")
       .trim();
     if (!answer) return { answer: synthesizeAnswer(waypoints), source: "fallback" };
     return { answer, source: "model" };
   } catch (err) {
-    console.error("askPlace: Haiku call failed; using local synthesis", err);
+    console.error("askPlace: Bedrock call failed; using local synthesis", err);
     return { answer: synthesizeAnswer(waypoints), source: "fallback" };
   }
 }

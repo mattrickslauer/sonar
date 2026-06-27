@@ -14,6 +14,8 @@ import { WebSocketLambdaAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authoriz
 import * as cloudtrail from "aws-cdk-lib/aws-cloudtrail";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
+import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
+import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
 
 /**
  * Sonar data layer.
@@ -168,6 +170,47 @@ export class SonarStack extends cdk.Stack {
         }),
       ],
     });
+
+    // ---------------------------------------------------------------------
+    // CloudFront — media CDN (signed URLs over the private bucket)
+    // ---------------------------------------------------------------------
+    // The media bucket stays fully private; CloudFront reads it via Origin
+    // Access Control. Reads stay gated exactly as before: /api/media/view checks
+    // access, then mints a short-lived *CloudFront signed URL* (instead of a
+    // presigned S3 GET), so private-channel media stays members-only + expiring,
+    // now served from the edge. This is the CDN line in the cost model
+    // (1 TB / 10M requests always-free → ~$0 at demo scale).
+    //
+    // Signed URLs need an RSA key pair. Provide the PUBLIC key (PEM) at deploy
+    // via context (`-c cfPublicKey="$(cat cf_public_key.pem)"`) or the
+    // SONAR_CF_PUBLIC_KEY env var; keep the PRIVATE key in Vercel/SSM for the app
+    // to sign with. Without a public key the CDN is skipped and the app falls
+    // back to presigned S3 GETs, so this is additive and CI `cdk synth` stays
+    // green without the key.
+    const cfPublicKeyPem =
+      (this.node.tryGetContext("cfPublicKey") as string | undefined) ??
+      process.env.SONAR_CF_PUBLIC_KEY;
+    let mediaCdn: cloudfront.Distribution | undefined;
+    let mediaCdnKeyId: string | undefined;
+    if (cfPublicKeyPem) {
+      const cfPublicKey = new cloudfront.PublicKey(this, "SonarMediaCdnPublicKey", {
+        encodedKey: cfPublicKeyPem,
+      });
+      mediaCdnKeyId = cfPublicKey.publicKeyId;
+      const keyGroup = new cloudfront.KeyGroup(this, "SonarMediaCdnKeyGroup", {
+        items: [cfPublicKey],
+      });
+      mediaCdn = new cloudfront.Distribution(this, "SonarMediaCdn", {
+        comment: "Sonar media CDN (signed URLs over private S3)",
+        defaultBehavior: {
+          origin: origins.S3BucketOrigin.withOriginAccessControl(mediaBucket),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          trustedKeyGroups: [keyGroup],
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+        },
+      });
+    }
 
     // ---------------------------------------------------------------------
     // Stream consumers (stubs — handlers in infra/lambda/*)
@@ -474,6 +517,20 @@ export class SonarStack extends cdk.Stack {
       value: mediaBucket.bucketName,
       description: "Set as SONAR_MEDIA_BUCKET for the media upload/view routes",
     });
+    if (mediaCdn) {
+      new cdk.CfnOutput(this, "MediaCdnDomain", {
+        value: mediaCdn.distributionDomainName,
+        description:
+          "CloudFront domain for media reads (set as SONAR_CDN_DOMAIN). Reads " +
+          "are CloudFront signed URLs; the matching PRIVATE key goes in " +
+          "SONAR_CF_PRIVATE_KEY.",
+      });
+      new cdk.CfnOutput(this, "MediaCdnKeyId", {
+        value: mediaCdnKeyId ?? "",
+        description:
+          "CloudFront public key id for signed URLs (set as SONAR_CF_KEY_PAIR_ID)",
+      });
+    }
     new cdk.CfnOutput(this, "MediaUserPolicyJson", {
       value: cdk.Stack.of(this).toJsonString(mediaUserPolicy.toJSON()),
       description:
