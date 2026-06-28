@@ -19,10 +19,10 @@ Every social product forces a single time horizon. Snapchat is **all-ephemeral**
 The deeper bet: this is fundamentally a **database-shaped problem**, not a feature problem. "What's worth going over to, right now, near me?" is a question about a high-write stream of geo-tagged, time-decaying events — and a separate question about durable accounts, money, and analytics. Those are two different data shapes. We chose two different AWS databases on purpose.
 
 ## What it does
-Open Sonar and you see a **live radar** of your surroundings. People drop **waypoints** — a note, photo, video, or 15-second voice clip — onto colored **channels** (Events, Food, Music, Social, Safety). Waypoints:
+Open Sonar and you see a **live radar** of your surroundings. People drop **waypoints** — a note, photo, or video — onto colored **channels** (Events, Food, Music, Social, Safety). Waypoints:
 
 - **stream in live** over WebSockets and are ranked by **proximity + freshness**;
-- **expire after 24 hours** by default — Sonar is ephemeral;
+- **live as long as you choose** — the author picks a lifespan (default **15 minutes**, up to **24 hours**), and life trades against size: the longer a drop lives, the smaller it may be — a **byte-hour budget** (50 MB at 15m → 3 MB at 24h). Sonar stays ephemeral by design;
 - **gain life from likes** — every like adds **+5 minutes** to a drop's countdown, uncapped, so the crowd keeps the good stuff alive minute by minute.
 
 Two things make it more than a map:
@@ -34,7 +34,7 @@ We deployed a **polyglot, all-serverless AWS data layer**, choosing each databas
 
 **Amazon DynamoDB — the high-write ephemeral radar (primary database).**
 - **Geospatial partition keys.** Items key on `PK = CH#<channel>#GEO#<geohash6>`, `SK = WP#<ts>#<id>`. "What's near me" is a query of my geohash cell + its 8 neighbors, merged and ranked — no scan, no geo extension, single-digit-ms reads at any scale.
-- **TTL *is* the business logic.** The 24-hour expiry is a native DynamoDB TTL attribute. "Likes buy time" is literally an atomic `ADD ttl 300` on the item — the like button writes the feature directly into the storage layer. Sponsored pins use a far-future TTL, so "permanence" is the same mechanism dialed to infinity.
+- **TTL *is* the business logic.** A drop's expiry is a native DynamoDB TTL attribute — and the **lifespan the author picks sets both the TTL and the upload byte-cap together**, so storage *time* and storage *size* trade off in a single choice (the *byte-hour* model: longer life, lighter payload). "Likes buy time" is literally an atomic `ADD ttl 300` on the item — the like button writes the feature directly into the storage layer. Sponsored pins use a far-future TTL, so "permanence" is the same mechanism dialed to infinity.
 - **Streams drive everything reactive.** `NEW_AND_OLD_IMAGES` streams fan out new drops to WebSocket subscribers in range and roll usage events up for billing — the database emits the events; we don't poll.
 - **Atomic counters** for likes and metering; **on-demand capacity** so it scales to millions of writes without provisioning.
 - One table also holds channel membership, presence, OTP codes, and usage-metering records — single-table design, every access pattern a key lookup.
@@ -44,7 +44,7 @@ Some data is relational and must be correct: **accounts**, **subscriptions / spo
 
 **The clinching architecture decision:** geofencing + a 24-hour window bound every "ask the place" AI query's context small enough to answer in a **single model call** — so **there is no vector database.** The data model is the scaling strategy.
 
-**The rest of the stack:** Next.js 16 on **Vercel** (mobile-first Mapbox radar UI, server routes, app-router); API Gateway **WebSockets** + a Lambda authorizer for real-time delivery and private-channel access control; **Amazon S3 + CloudFront** for media (presigned uploads to a private bucket; reads served from the CloudFront edge via short-lived signed URLs, so private-channel media stays gated — media never touches DynamoDB's 400 KB item cap); **Amazon Bedrock (Claude Haiku)** for "ask the place" (authenticated with the same IAM identity as the data layer — no separate API key); **Stripe** for sponsorships. All AWS infra is **AWS CDK** (one stack), us-east-1.
+**The rest of the stack:** Next.js 16 on **Vercel** (mobile-first Mapbox radar UI, server routes, app-router); API Gateway **WebSockets** + a Lambda authorizer for real-time delivery and connection access control; **Amazon S3 + CloudFront** for media (presigned uploads to a private bucket; reads served from the CloudFront edge via short-lived signed URLs, so media stays gated — and never touches DynamoDB's 400 KB item cap); **Amazon Bedrock (Claude Haiku)** for "ask the place" (authenticated with the same IAM identity as the data layer — no separate API key); **Stripe** for sponsorships. All AWS infra is **AWS CDK** (one stack), us-east-1.
 
 ## Who it's for & why it matters
 Anyone in a **dense, lively, time-sensitive place** — festival-goers, students on a campus, conference attendees, a neighborhood during an event. The question Sonar answers — *"is it worth going over there, right now?"* — is universal and currently unanswered by all-permanent feeds. The same engine runs **Sonar for Work**: a workplace coordination layer for office parks and multi-tenant buildings (see the B2B outline).
@@ -52,7 +52,7 @@ Anyone in a **dense, lively, time-sensitive place** — festival-goers, students
 ## Challenges we ran into
 - **Aurora DSQL is new** and has sharp edges we had to design around: it rejects the `statement_timeout` GUC, and demands distinct `$`-placeholders per column type (a `42P08` that broke every write until fixed). Working through these is exactly why using DSQL *competently* is a differentiator.
 - **Making TTL carry product meaning** (likes → +5 min) while keeping reads cheap meant getting the single-table key design right up front.
-- **Real-time fan-out from Streams** to only the WebSocket connections subscribed to a channel *and* in geo-range, with a Lambda authorizer gating private channels.
+- **Real-time fan-out from Streams** to only the WebSocket connections subscribed to a channel *and* in geo-range, with a Lambda authorizer enforcing connection access control.
 
 ## Accomplishments we're proud of
 A genuinely **shippable** product, live at mysonar.zone, where the database isn't a checkbox — it's the centerpiece. Two serverless AWS databases, each doing the job it's best at, with the marquee feature (likes-buy-time) implemented *as* a TTL mutation. And a realistic cost model: ~$24/mo at a coherent early-traction scale (~10K MAU, ~500K waypoints/mo).
