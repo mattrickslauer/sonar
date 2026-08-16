@@ -23,7 +23,7 @@ export interface Channel {
 export const CHANNELS: Channel[] = [
   // The always-present, public "everyone" channel. Seeded as a system row
   // (infra/sql/010_seed_general_channel.sql) and default-toggled-on in the dock
-  // (see loadVisibleChannels), so the radar is never empty. Bots top this up.
+  // (see loadVisibleChannels), so a new user always has somewhere to land.
   { id: "general", label: "General", emoji: "📢", color: "#60a5fa" },
   { id: "events", label: "Events", emoji: "🎪", color: "#f5a524" },
   { id: "food", label: "Food", emoji: "🍔", color: "#fb7185" },

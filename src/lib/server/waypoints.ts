@@ -12,7 +12,7 @@ import {
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { CHANNELS, ChannelId } from "@/lib/channels";
 import { LngLat, distance, bearing } from "@/lib/geo";
-import { Waypoint, MediaKind, mediaViewUrl } from "@/lib/waypoints";
+import { Waypoint, MediaKind, mediaViewUrl, isLive } from "@/lib/waypoints";
 import { cellAndNeighbors, encodeGeohash } from "@/lib/geohash";
 
 // Use SONAR_-prefixed config, NOT the bare AWS_* names: on Vercel the functions
@@ -26,7 +26,7 @@ const REGION =
 const TABLE = process.env.SONAR_TABLE ?? "sonar";
 const TTL_SECONDS = 24 * 60 * 60;
 // Likes buy time: each human love extends the waypoint's ttl by this much
-// (uncapped — sustained loves keep a drop alive). Bots never reach this path.
+// (uncapped — sustained loves keep a drop alive).
 const LOVE_EXTENSION_SECONDS = 5 * 60;
 // Sponsored (paid) waypoints are permanent: a far-future ttl so DynamoDB TTL
 // never deletes them, and the +5min love bump stays a harmless no-op.
@@ -116,6 +116,10 @@ export async function queryNearby(
   const items = results.flatMap((r) => r.Items ?? []);
   return items
     .map((it) => toWaypoint(it, center, now))
+    // DynamoDB's TTL sweeper is best-effort and can lag hours behind `ttl`, so
+    // an expired drop is still readable. Never show one: the radar's promise is
+    // that a pin on the map is live.
+    .filter((w) => isLive(w, now))
     .filter((w) => radiusMeters == null || w.meters <= radiusMeters)
     .sort((a, b) => a.meters - b.meters); // proximity-ranked
 }
@@ -227,6 +231,9 @@ export async function queryMyWaypoints(
   return items
     .filter((it) => !sponsoredOnly || Boolean(it.sponsored))
     .map((it) => toWaypoint(it, { lat: Number(it.lat), lng: Number(it.lng) }, now))
+    // Same TTL-lag guard as queryNearby. Permanent (sponsored) pins carry a
+    // far-future ttl, so this never touches the billing-backed console list.
+    .filter((w) => isLive(w, now))
     .sort((a, b) => b.expiresAt - a.expiresAt);
 }
 
@@ -580,22 +587,3 @@ export async function lovedAmong(ids: string[], user: string): Promise<string[]>
   return loved;
 }
 
-const PRESENCE_TTL_SECONDS = 3 * 60; // bots react to recent presence only
-
-/** Heartbeat: mark this user present in their gh6 cell (drives the bot tick). */
-export async function recordPresence(lat: number, lng: number, user: string): Promise<void> {
-  const gh6 = encodeGeohash(lat, lng, 6);
-  const now = Date.now();
-  await ddb.send(new PutCommand({
-    TableName: TABLE,
-    Item: {
-      PK: "PRESENCE",
-      SK: `GEO#${gh6}#USER#${user}`,
-      gh6,
-      lat,
-      lng,
-      updatedAt: now,
-      ttl: Math.floor(now / 1000) + PRESENCE_TTL_SECONDS,
-    },
-  }));
-}

@@ -15,8 +15,6 @@ AWS CDK (TypeScript) for the Sonar data layer. Implements the design in
   not stream-driven. (Note: **likes extend a drop's `ttl` in-place** via the love API —
   `ADD ttl 300` per human like — and **sponsored permanent pins are created with a
   far-future `ttl`**; neither path is a stream consumer.)
-- **Bot tick** — EventBridge rule (1 min) → `bot-tick` Lambda that tops up quiet
-  cells with templated bot waypoints off the `PRESENCE` items.
 
 ## Commands
 
@@ -29,9 +27,12 @@ npm run deploy    # cdk deploy (requires AWS creds + one-time `cdk bootstrap`)
 
 ## Notes
 
-- **EventBridge cadence:** `rate()` minimum is 1 minute. The data model's ~45s
-  bot cadence needs the handler to self-reschedule or a Step Functions Wait loop.
 - **DSQL DDL** is applied out-of-band (e.g. a migration Lambda or psql) after the
   cluster is up; CDK only provisions the cluster.
-- **Removal policy** on the table is `DESTROY` for the hackathon — switch to
-  `RETAIN` for anything real.
+- **Removal policy** on the DynamoDB table and the media bucket is `RETAIN`:
+  they hold real user content, so a `cdk destroy` leaves them behind. Delete
+  them by hand if that is genuinely what you want. The CloudTrail archive bucket
+  stays `DESTROY` — it only holds 30 days of audit logs.
+- **No synthetic content.** The bot liveness tick, its EventBridge schedule, its
+  Anthropic caption layer and the `PRESENCE` heartbeat that fed it were removed.
+  Every waypoint is written by a real user.

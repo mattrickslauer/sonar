@@ -16,7 +16,6 @@ import {
   postDrop,
   postLove,
   postUnlove,
-  postPresence,
   rawToWaypoint,
   readPendingDrop,
   clearPendingDrop,
@@ -47,6 +46,7 @@ import WaypointSheet from "@/components/WaypointSheet";
 import ClusterSheet from "@/components/ClusterSheet";
 import DropComposer from "@/components/DropComposer";
 import LocationGate from "@/components/LocationGate";
+import EmptyRadar from "@/components/EmptyRadar";
 import ClaimSheet from "@/components/ClaimSheet";
 import ManageSheet from "@/components/ManageSheet";
 import MyChannelsSheet from "@/components/MyChannelsSheet";
@@ -71,6 +71,9 @@ export default function Home() {
   const [locationError, setLocationError] = useState<LocationError>(null);
   const [locateAttempt, setLocateAttempt] = useState(0);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+  // False until the first radar fetch settles — gates the empty state so an
+  // in-flight load never reads as "nothing here".
+  const [radarLoaded, setRadarLoaded] = useState(false);
   // The open channel set (public + private the user belongs to). Seeded with the
   // static core for first paint, then replaced by the live registry.
   const [channels, setChannels] = useState<Channel[]>(CHANNELS);
@@ -353,7 +356,12 @@ export default function Home() {
         if (!active) return;
         setWaypoints(w);
       })
-      .catch((e) => console.error("load radar", e));
+      .catch((e) => console.error("load radar", e))
+      // Marks the first fetch as settled (either way) so the empty state can't
+      // flash over a radar that simply hasn't loaded yet.
+      .finally(() => {
+        if (active) setRadarLoaded(true);
+      });
     return () => {
       active = false;
     };
@@ -376,16 +384,6 @@ export default function Home() {
   useEffect(() => {
     centerRef.current = center;
   }, [center]);
-
-  // Presence heartbeat → feeds the bot-tick liveness loop for this cell.
-  useEffect(() => {
-    if (!center) return;
-    const beat = () =>
-      postPresence({ lat: center.lat, lng: center.lng, anonId: userId }).catch(() => {});
-    beat();
-    const t = setInterval(beat, 60_000);
-    return () => clearInterval(t);
-  }, [center, userId]);
 
   // Hydrate loved-state: for any waypoint we haven't checked yet, ask the
   // backend which this user has already loved and seed the heart state. A ref
@@ -459,6 +457,24 @@ export default function Home() {
     () => waypoints.filter((w) => w.meters <= radiusMeters).length,
     [waypoints, radiusMeters]
   );
+
+  // Drops that are in range but sit on a switched-off channel. Drives the
+  // "filtered" empty state and its one-tap undo, so the reader is never told
+  // the area is quiet when it's really their own filters.
+  const hiddenInRange = useMemo(
+    () => waypoints.filter((w) => w.meters <= radiusMeters && !visible.has(w.channel)),
+    [waypoints, radiusMeters, visible]
+  );
+
+  /** Re-enable exactly the channels currently hiding in-range drops. */
+  function showHiddenChannels() {
+    setVisible((prev) => {
+      const next = new Set(prev);
+      for (const w of hiddenInRange) next.add(w.channel);
+      saveVisibleChannels([...next]);
+      return next;
+    });
+  }
 
   const selected = useMemo(
     () => waypoints.find((w) => w.id === selectedId) ?? null,
@@ -773,6 +789,17 @@ export default function Home() {
             account={account}
             onAccountClick={() => setClaimOpen(true)}
           />
+
+          {/* Nothing to plot. Distinguishes a genuinely quiet area from one the
+              reader has filtered down to nothing — different cause, different fix. */}
+          {radarLoaded && visibleWaypoints.length === 0 && (
+            <EmptyRadar
+              mode={hiddenInRange.length > 0 ? "filtered" : "quiet"}
+              rangeLabel={formatDistance(radiusMeters)}
+              hiddenCount={hiddenInRange.length}
+              onShowHidden={showHiddenChannels}
+            />
+          )}
 
           {/* bottom control stack */}
           <div className="absolute inset-x-0 bottom-0 z-30 flex flex-col gap-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2">

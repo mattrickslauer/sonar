@@ -13,14 +13,14 @@ This document is the source of truth for keys, attributes, and access patterns. 
 
 These are the product/architecture choices the schema is built on. Changing one of these is a schema change, not a tweak.
 
-- **One ephemeral table.** Every user/bot waypoint starts at 24h-TTL. There is **no statically-seeded permanent world** and **no earned permanence**.
+- **One ephemeral table.** Every waypoint starts at 24h-TTL. There is **no statically-seeded permanent world** and **no earned permanence**.
 - **Likes buy time.** A waypoint's life is its `ttl` — base 24h, **extended +5 min (300 s) on every human like, uncapped**. The crowd keeps good drops alive minute by minute; a drop that stops being liked eventually expires. Likes never make a drop permanent.
 - **The only permanence is sponsored.** A **sponsored waypoint** is a paid, permanent pin: a normal DynamoDB waypoint with `sponsored=true`, a `sponsor` label, and a **far-future `ttl`** so DynamoDB TTL never deletes it. It lives on its geo cell like any waypoint, so it shows on the radar. There is no love threshold and no promotion stream — permanence is purchased, not earned. DSQL holds the `sponsorships` billing record (who paid for which pin, for how long).
-- **Reactive seeding via bots.** Liveness is generated *on demand, near a real user, when they sign in* — not pre-seeded globally. This is cheaper, always-fresh (no empty-world problem at the 24h boundary), and demos better.
+- **No synthetic content.** Every waypoint is written by a real user. Sonar ran a bot liveness tick during the hackathon to keep quiet cells populated; it was removed along with its `PRESENCE` feed and seed media. An empty radar now means the place is genuinely empty, and the UI says so (`EmptyRadar`) rather than manufacturing activity.
 - **"Seeking" = nearby browsing.** There is no quest/target entity. The radar's color-on-approach is pure client-side distance math (`distance()` in `src/lib/geo.ts`) over the precise `lat`/`lng` carried on each item. No schema support required beyond storing coordinates.
 - **Geohash precision 6** (`gh6`, ≈ 1.2 km × 0.6 km) for the waypoint partition, matched to the ≈ 1 km radar. "Near me" queries the user's cell plus its 8 neighbors, then filters to the exact radius client-side.
-- **Bots are first-class but quarantined.** They write to the same table tagged `actorType=bot`. Stream consumers filter them out so they never extend a drop's life and never meter for billing. Bots are never sponsored.
-- **Bot love can't buy time.** Display love (`love`, humans **and** bots) and life-extending love (`realLove`, human-only) are separate counters — **only `realLove` extends `ttl`**, so bots can inflate the visible count but can't keep a drop alive.
+- **Reads never trust item presence.** DynamoDB's TTL sweeper is best-effort and can lag hours behind the attribute, so an expired item is still readable. Every read path filters on the computed expiry (`isLive()` in `src/lib/waypoints.ts`) — if a pin is on the radar, it is live.
+- **Two love counters.** Display love (`love`) and life-extending love (`realLove`) are separate. **Only `realLove` extends `ttl`.** The split was built to stop bot love buying a drop time; it survives the bots' removal as the seam where any non-human love would have to be quarantined.
 
 All resources run in **`us-east-1`**.
 
@@ -29,7 +29,7 @@ All resources run in **`us-east-1`**.
 ## DynamoDB — single table `sonar`
 
 - **Billing:** on-demand (PAY_PER_REQUEST).
-- **TTL attribute:** `ttl` (epoch **seconds**). Drives expiry for waypoints and bot drops — starts at `createdAt/1000 + 86400`, **extended +300 s per human like**; also expires presence and connection records. **Sponsored pins set a far-future `ttl`** so they never expire (and the +300 s love bump stays a harmless no-op).
+- **TTL attribute:** `ttl` (epoch **seconds**). Drives waypoint expiry — starts at `createdAt/1000 + 86400`, **extended +300 s per human like**; also expires connection records. The sweeper is best-effort and can lag, so reads filter on `ttl` too (`isLive()`), never trusting item presence alone. **Sponsored pins set a far-future `ttl`** so they never expire (and the +300 s love bump stays a harmless no-op).
 - **Streams:** `NEW_AND_OLD_IMAGES` → Lambda consumers for live fan-out and metering rollup. (No promotion consumer — permanence is sponsored, not stream-driven.)
 - **IDs:** `ulid` — sortable by creation time *and* unique, so the sort key alone orders a cell's feed chronologically.
 
@@ -39,7 +39,6 @@ All resources run in **`us-east-1`**.
 |---|---|---|---|
 | **Waypoint** | `CH#<channel>#GEO#<gh6>` | `WP#<ulid>` | the live feed item |
 | **Love edge** | `WP#<wpId>` | `LOVE#<userId>` | dedupe: one love per user per waypoint |
-| **Presence** | `PRESENCE` | `GEO#<gh6>#USER#<userId>` | heartbeat; tells the bot tick where users are |
 | **WS connection** | `CONN#<channel>` | `CID#<connId>` | fan-out target list per channel |
 | **Channel membership** | `CH#<channel>` | `MEMBER#<userId>` | read by the WS authorizer for private channels |
 | **Usage event** | `USAGE#<channel>#<yyyymmddhh>` | `EVT#<ulid>` | raw connect/message events for hourly rollup |
@@ -50,7 +49,7 @@ All resources run in **`us-east-1`**.
 |---|---|---|
 | `id` | S | ULID, also embedded in SK |
 | `channel` | S | one of `events` `food` `music` `social` `safety` |
-| `actorType` | S | `human` \| `bot` \| `sponsor` — **stream consumers branch on this** |
+| `actorType` | S | `human` \| `sponsor` — **stream consumers branch on this** |
 | `kind` | S | `text` \| `photo` \| `video` \| `voice` |
 | `author` | S | display handle |
 | `text` | S | body (≤ a few KB; media never lives here — 400 KB item cap) |
@@ -58,7 +57,7 @@ All resources run in **`us-east-1`**.
 | `gh9` | S | full-precision geohash (debug / future finer queries) |
 | `createdAt` | N | epoch ms |
 | `ttl` | N | epoch **seconds** = `createdAt/1000 + 86400 + 300 × realLove` (each human like buys +5 min); **sponsored pins use a far-future sentinel** so they never expire |
-| `love` | N | display love count (humans **and** bots) |
+| `love` | N | display love count |
 | `realLove` | N | human-only love; **each one extends `ttl` by 5 min** |
 | `sponsored` | BOOL | a paid permanent pin (never expires). Default false |
 | `sponsor` | S | sponsor/brand label shown on the pin (only on sponsored waypoints) |
@@ -81,20 +80,18 @@ Sparse GSI keyed by `GSI1PK` / `GSI1SK`. Two uses share it:
 |---|---|
 | **What's near me** | For each active channel: Query `PK = CH#<channel>#GEO#<gh6>` for the user's cell **+ 8 neighbor cells**, `SK begins_with WP#`. Merge results, client computes exact distance, ranks by proximity + freshness, colors by distance. |
 | **Drop a waypoint** | `PutItem` with `ttl = createdAt/1000 + 86400`. |
-| **Love a waypoint (buy time)** | Conditional `PutItem` of the love edge (`attribute_not_exists`) → on success `UpdateItem ADD love 1`; when the lover is **human**, also `ADD realLove 1` and `ADD ttl 300` in the same update → the like **buys the drop 5 more minutes** (uncapped). Bot love touches `love` only. Double-love is rejected by the condition (so each user can buy time once). |
-| **Bot tick** (EventBridge, ≈ every 45s) | Query `PK = PRESENCE` → active cells. For each: count real waypoints in the cell; if below the liveness target, drop templated bot waypoints (`actorType=bot`, staggered `createdAt`); optionally bot-love recent real drops (touches `love` only). |
-| **Heartbeat** | Client `PutItem` of the presence record (`ttl` ≈ now + 3 min) on a timer while the radar is open. Stale presence self-expires. |
+| **Love a waypoint (buy time)** | Conditional `PutItem` of the love edge (`attribute_not_exists`) → on success `UpdateItem ADD love 1`; when the lover is **human**, also `ADD realLove 1` and `ADD ttl 300` in the same update → the like **buys the drop 5 more minutes** (uncapped). Double-love is rejected by the condition (so each user can buy time once). |
 | **Subscribe (WS)** | Authorizer reads `CH#<channel> / MEMBER#<userId>` for private channels; on success store `CONN#<channel> / CID#<connId>`. |
 | **Live fan-out** | Stream (INSERT waypoint) → Lambda → Query `PK = CONN#<channel>` → `postToConnection` for each `connId`. |
 | **Place a sponsored permanent pin** | `PutItem` a waypoint with `actorType=sponsor`, `sponsored=true`, a `sponsor` label, and a **far-future `ttl`** (never expires). It sits on its `CH#…#GEO#…` cell so the normal nearby query returns it. Then write a `sponsorships` row in DSQL (sponsor account, waypoint_id, campaign window, amount) as the billing record. No stream/promotion involved. |
-| **Meter usage** | connect/message → `USAGE#…` event → Stream → atomic `ADD` rollup → flushed to DSQL `usage_rollups`. Bot-origin events excluded. |
+| **Meter usage** | connect/message → `USAGE#…` event → Stream → atomic `ADD` rollup → flushed to DSQL `usage_rollups`. |
 | **Auto-expire** | TTL on `ttl`. A drop vanishes when its (like-extended) `ttl` passes — base 24h, +5 min per human like, uncapped. **Sponsored pins use a far-future `ttl`, so they never expire.** No janitor. |
 
-> **Stream consumer rule:** every consumer inspects `actorType`. `bot` items are display-only — they never extend a drop's life, never meter for billing, never increment `realLove`. `sponsor` items are permanent (far-future ttl) and excluded from metering.
+> **Stream consumer rule:** every consumer inspects `actorType`. `sponsor` items are permanent (far-future ttl) and excluded from metering.
 
 ### Notes & deferred concerns
 
-- **Hot partitions.** A dense cell (festival main stage, Times Square) concentrates writes on one PK. Acceptable for the demo; if needed, shard the waypoint PK with a suffix (`…#GEO#<gh6>#<n>`) and fan reads across shards. Same applies to the single `PRESENCE` partition.
+- **Hot partitions.** A dense cell (festival main stage, Times Square) concentrates writes on one PK. Acceptable for the demo; if needed, shard the waypoint PK with a suffix (`…#GEO#<gh6>#<n>`) and fan reads across shards. 
 - **All-channel nearby** is N per-channel queries merged (N = active channels, currently 5). Fine at this scale; revisit if channels proliferate.
 - **Channel set** lives in `src/lib/channels.ts` (`events` `food` `music` `social` `safety`; `safety` is private).
 
@@ -114,7 +111,6 @@ accounts (
   handle            text unique not null,
   display_name      text not null,
   avatar_url        text,
-  is_bot            boolean not null default false,   -- bot persona pool
   created_at        timestamptz not null default now()
 )
 
@@ -172,7 +168,6 @@ invoices (
 )
 ```
 
-- **Bot personas** are `accounts` rows with `is_bot=true` — a small reusable pool with stable names/avatars. Their waypoints stay ephemeral in DynamoDB and are never sponsored.
 - **Sponsored pins are served from DynamoDB**, not DSQL — they're regular waypoint items (with a far-future `ttl`) on their geo cell, so the normal nearby query returns them with no extra read path. `sponsorships` is purely the relational billing record; it isn't on the radar read path, so no geo index is needed on it.
 
 ---
@@ -191,5 +186,4 @@ sponsor ──put permanent pin──► DynamoDB (far-future ttl)      │
         └──write billing record──► DSQL.sponsorships ─────────┘
                                    (sponsorship)   (B2B usage)
 
-EventBridge (~45s) ──► bot tick ──reads PRESENCE, tops up quiet cells──► DynamoDB
 ```

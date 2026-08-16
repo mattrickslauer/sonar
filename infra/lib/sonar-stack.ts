@@ -22,13 +22,16 @@ import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
  *
  * See docs/data-model.md for the full design. In short:
  *  - One on-demand DynamoDB table `sonar` is the high-write ephemeral path
- *    (waypoints, presence, connections, membership, usage). TTL on `ttl`
+ *    (waypoints, connections, membership, usage). TTL on `ttl`
  *    (24h base, +5min per like; sponsored pins use a far-future ttl), and a
  *    NEW_AND_OLD_IMAGES stream drives fan-out / metering.
  *  - GSI1 serves the reverse lookups ("my drops", "channels I'm in").
  *  - Aurora DSQL is the relational system-of-record (sponsorships, usage
  *    rollups, billing).
- *  - An EventBridge tick drives the bot liveness loop off the PRESENCE items.
+ *
+ * Every waypoint here is written by a real user. There is no synthetic content
+ * generator: the bot liveness tick, its PRESENCE feed, and the seeded media
+ * that fed it were removed once Sonar stopped being a demo.
  */
 export class SonarStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -44,8 +47,9 @@ export class SonarStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: "ttl",
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
-      // Hackathon: tear down cleanly. Switch to RETAIN for anything real.
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // Real user content lives here. A stack delete must not take it with it —
+      // drop the table by hand if that is genuinely what you mean.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
     // GSI1 — reverse lookups, shared by "my drops" and "channels I'm in".
@@ -115,8 +119,8 @@ export class SonarStack extends cdk.Stack {
       enforceSSL: true,
       lifecycleRules: [
         {
-          // Only the ephemeral user uploads under media/ expire. Bot seed media
-          // under seed/ is permanent (referenced by the always-on bot tick).
+          // User uploads under media/ are ephemeral and expire with the drops
+          // they belong to. This is the only prefix the app writes.
           id: "expire-ephemeral-uploads",
           prefix: "media/",
           expiration: cdk.Duration.days(2),
@@ -146,9 +150,9 @@ export class SonarStack extends cdk.Stack {
           maxAge: 3600,
         },
       ],
-      // Hackathon: tear down cleanly. Switch to RETAIN for anything real.
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
+      // User-uploaded media. Retain on stack delete; the media/ lifecycle rule
+      // is what reclaims space, not a teardown.
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
     // The Vercel functions sign uploads/reads with the external sonar-vercel IAM
@@ -161,12 +165,6 @@ export class SonarStack extends cdk.Stack {
           sid: "SonarMediaObjectRW",
           actions: ["s3:PutObject", "s3:GetObject"],
           resources: [mediaBucket.arnForObjects("media/*")],
-        }),
-        // Read-only on the bot seed media so the view route can presign GETs.
-        new iam.PolicyStatement({
-          sid: "SonarSeedObjectRead",
-          actions: ["s3:GetObject"],
-          resources: [mediaBucket.arnForObjects("seed/*")],
         }),
       ],
     });
@@ -227,15 +225,6 @@ export class SonarStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda", "layers", "dsql")),
       compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
       description: "pg + @aws-sdk/dsql-signer for the DSQL-touching consumers",
-    });
-
-    // Layer carrying the Anthropic SDK (Haiku-generated bot captions) and the
-    // SSM client (reads the API key from Parameter Store at runtime) for the
-    // bot-tick liveness Lambda. Neither is bundled in the Node 20 runtime.
-    const anthropicLayer = new lambda.LayerVersion(this, "AnthropicDepsLayer", {
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda", "layers", "anthropic")),
-      compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
-      description: "@anthropic-ai/sdk + @aws-sdk/client-ssm for the bot-tick Lambda",
     });
 
     const makeFn = (
@@ -357,45 +346,6 @@ export class SonarStack extends cdk.Stack {
     new events.Rule(this, "ChannelMeterTickRule", {
       schedule: events.Schedule.cron({ minute: "0" }),
       targets: [new targets.LambdaFunction(channelMeterTick)],
-    });
-
-    // ---------------------------------------------------------------------
-    // Bot liveness tick (EventBridge → Lambda)
-    // ---------------------------------------------------------------------
-    // Reads active cells from PRESENCE and tops up quiet ones with templated
-    // bot waypoints. Note: EventBridge rate() min is 1 minute; for the ~45s
-    // cadence in the data model the handler should self-reschedule or use a
-    // Step Functions Wait loop.
-    // Captions are written fresh each tick by Claude Haiku. The API key lives in
-    // SSM Parameter Store (set out of band, like the Stripe secrets) so it never
-    // enters git or the CloudFormation template and rotates without a redeploy;
-    // the Lambda reads it at runtime and falls back to a static script if it's
-    // missing or the API call fails.
-    // Captions are also grounded in each cell's place: the Lambda reverse-
-    // geocodes the cell center via Mapbox (public NEXT_PUBLIC token, passed
-    // through at synth). Unset → captions still generate, just location-agnostic.
-    const anthropicKeyParam = "/sonar/anthropic/api-key";
-    const botTick = makeFn("BotTickFn", "bot-tick", {
-      layers: [anthropicLayer],
-      env: {
-        ANTHROPIC_API_KEY_PARAM: anthropicKeyParam,
-        MAPBOX_TOKEN:
-          process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? process.env.MAPBOX_TOKEN ?? "",
-      },
-    });
-    table.grantReadWriteData(botTick);
-    botTick.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: "SonarAnthropicKeyRead",
-        actions: ["ssm:GetParameter"],
-        resources: [
-          `arn:aws:ssm:${region}:${this.account}:parameter${anthropicKeyParam}`,
-        ],
-      }),
-    );
-    new events.Rule(this, "BotTickScheduleRule", {
-      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
-      targets: [new targets.LambdaFunction(botTick)],
     });
 
     // ---------------------------------------------------------------------

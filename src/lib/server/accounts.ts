@@ -15,7 +15,6 @@ export interface Account {
   handle: string;
   displayName: string;
   avatarUrl: string | null;
-  isBot: boolean;
   email: string | null;
   googleSub: string | null;
   authMethod: string | null;
@@ -52,7 +51,7 @@ export function newAccountId(): string {
 
 const SELECT_COLS = `
   id, handle, display_name AS "displayName", avatar_url AS "avatarUrl",
-  is_bot AS "isBot", email, google_sub AS "googleSub",
+  email, google_sub AS "googleSub",
   auth_method AS "authMethod", claimed_at AS "claimedAt",
   last_login_at AS "lastLoginAt", created_at AS "createdAt"
 `;
@@ -223,8 +222,8 @@ export async function claimOrSignIn(
     const displayName = identity.displayName?.trim() || email?.split("@")[0] || "you";
     let targetId = deviceAccountId;
     const device = isUuid(deviceAccountId) ? await getAccountById(deviceAccountId) : null;
-    if (!device || device.claimedAt || device.isBot) {
-      // No usable anon row (never wrote, already claimed, or a bot id) → fresh account.
+    if (!device || device.claimedAt) {
+      // No usable anon row (never wrote, or already claimed) → fresh account.
       targetId = newAccountId();
       // $1 (uuid id) and $2 (text handle) must be distinct placeholders even
       // though both carry targetId — see ensureAnonymousAccount for why reusing
