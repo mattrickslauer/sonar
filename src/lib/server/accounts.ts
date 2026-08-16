@@ -1,6 +1,6 @@
 // Server-only: durable account records in Aurora DSQL — the system-of-record
 // for identity. The canonical userId across BOTH stores is `accounts.id`; the
-// DynamoDB hot path (waypoints/loves/presence) only ever references it. See
+// DynamoDB hot path (waypoints/loves/membership) only ever references it. See
 // docs/data-model.md and the auth design.
 //
 // Identity lifecycle: an anonymous device is an `accounts` row with
