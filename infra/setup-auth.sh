@@ -15,7 +15,7 @@
 #   STEP=iam   bash infra/setup-auth.sh # only the IAM grant
 #   STEP=sql   bash infra/setup-auth.sh # only the DSQL migrations
 #   STEP=env   bash infra/setup-auth.sh # only the Vercel env vars
-#   STEP=ses   bash infra/setup-auth.sh # only the SES sender + ses:SendEmail grant
+#   STEP=resend bash infra/setup-auth.sh # only RESEND_API_KEY (from SSM /resend/api-key)
 set -euo pipefail
 
 # --- config (edit if your account / cluster / region / project differ) -------
@@ -25,8 +25,7 @@ DSQL_CLUSTER_ID="${DSQL_CLUSTER_ID:-7rt2xophiyumbk2nzjkf5umwhe}"
 VERCEL_SCOPE="${VERCEL_SCOPE:-ag-farms}"
 VERCEL_PROJECT="${VERCEL_PROJECT:-sonar}"
 VERCEL_TARGET="${VERCEL_TARGET:-production}"   # production | preview | development
-SES_SENDER="${SES_SENDER:-Sonar <noreply@mysonar.zone>}"
-SES_IDENTITY="${SES_IDENTITY:-mysonar.zone}"   # the verified SES identity (domain — lets any @mysonar.zone address send)
+RESEND_KEY_PARAM="${RESEND_KEY_PARAM:-/resend/api-key}"   # SSM SecureString holding the Resend API key
 
 CLUSTER_ARN="arn:aws:dsql:${REGION}:${ACCOUNT_ID}:cluster/${DSQL_CLUSTER_ID}"
 export SONAR_DSQL_ENDPOINT="${DSQL_CLUSTER_ID}.dsql.${REGION}.on.aws"
@@ -72,34 +71,27 @@ run_env() {
   echo "    done. Redeploy to pick them up:  vercel --prod --scope $VERCEL_SCOPE"
 }
 
-run_ses() {
-  echo "==> SES: verify the sender identity, grant sonar-vercel ses:SendEmail,"
-  echo "         and set SONAR_SES_SENDER=${SES_SENDER}"
-  # Create the identity if it doesn't exist yet. An EMAIL_ADDRESS identity then
-  # emails a confirmation link you must click; a domain identity needs DNS
-  # records. Skips cleanly if already verified.
-  aws sesv2 create-email-identity --email-identity "$SES_IDENTITY" --region "$REGION" 2>/dev/null \
-    && echo "    created identity ${SES_IDENTITY} — check your inbox and click the verify link" \
-    || echo "    identity ${SES_IDENTITY} already exists (skipping create)"
-  # SES authorizes ses:SendEmail against BOTH the sender AND recipient identity,
-  # and against the account's default configuration set if one is applied — so
-  # scope to all identities + configuration sets in this region (NOT just the
-  # sender identity, which fails on the recipient / config-set resource).
-  aws iam put-user-policy --user-name sonar-vercel --policy-name SonarSesSend \
-    --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"SonarSesSend\",\"Effect\":\"Allow\",\"Action\":[\"ses:SendEmail\",\"ses:SendRawEmail\"],\"Resource\":[\"arn:aws:ses:${REGION}:${ACCOUNT_ID}:identity/*\",\"arn:aws:ses:${REGION}:${ACCOUNT_ID}:configuration-set/*\"]}]}"
+run_resend() {
+  echo "==> Vercel: RESEND_API_KEY from SSM ${RESEND_KEY_PARAM} (OTP email)"
+  # Piped straight from SSM into Vercel; the key is never echoed.
+  if ! KEY="$(aws ssm get-parameter --with-decryption --name "$RESEND_KEY_PARAM" \
+      --region "$REGION" --query Parameter.Value --output text 2>/dev/null)"; then
+    echo "    SSM ${RESEND_KEY_PARAM} not found — skipping (codes stay logged, not emailed)"
+    return 0
+  fi
   vercel link --yes --project "$VERCEL_PROJECT" --scope "$VERCEL_SCOPE" >/dev/null
-  set_env SONAR_SES_SENDER "$SES_SENDER"
-  echo "    done. NOTE: SES starts in sandbox (recipients must be verified);"
-  echo "    request production access in the SES console for arbitrary signups."
+  set_env RESEND_API_KEY "$KEY"
+  unset KEY
+  echo "    done. Redeploy to pick it up:  vercel --prod --scope $VERCEL_SCOPE"
 }
 
 case "$STEP" in
   iam) run_iam ;;
   sql) run_sql ;;
   env) run_env ;;
-  ses) run_ses ;;
-  all) run_iam; run_sql; run_env; run_ses ;;
-  *)   echo "unknown STEP=$STEP (use iam|sql|env|ses|all)"; exit 1 ;;
+  resend) run_resend ;;
+  all) run_iam; run_sql; run_env; run_resend ;;
+  *)   echo "unknown STEP=$STEP (use iam|sql|env|resend|all)"; exit 1 ;;
 esac
 
 cat <<EOF
