@@ -75,20 +75,20 @@ describe("sendOtpEmail", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("123456"));
   });
 
-  it("sends the code from SONAR_MAIL_FROM (default sonar@agfarms.dev)", async () => {
+  it("sends the code from SONAR_EMAIL_FROM (default sonar@mattrickslauer.com)", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     const { calls, fetch } = scripted([[200, { id: "em_3" }]]);
     await sendOtpEmail("ana@example.com", "123456", fetch);
     expect(emailConfigured()).toBe(true);
     const body = JSON.parse(calls[0].init.body as string);
-    expect(body.from).toBe("Sonar <sonar@agfarms.dev>");
+    expect(body.from).toBe("Sonar <sonar@mattrickslauer.com>");
     expect(body.to).toBe("ana@example.com");
     expect(body.subject).toBe("Your Sonar sign-in code: 123456");
     expect(body.text).toContain("123456");
 
-    vi.stubEnv("SONAR_MAIL_FROM", "Sonar <sonar@mattrickslauer.com>");
+    vi.stubEnv("SONAR_EMAIL_FROM", "Sonar <hi@justonebranch.com>");
     await sendOtpEmail("ana@example.com", "123456", fetch);
-    expect(JSON.parse(calls[1].init.body as string).from).toBe("Sonar <sonar@mattrickslauer.com>");
+    expect(JSON.parse(calls[1].init.body as string).from).toBe("Sonar <hi@justonebranch.com>");
   });
 
   it("throws when Resend rejects, so the route returns 502", async () => {

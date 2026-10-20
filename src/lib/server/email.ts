@@ -1,14 +1,15 @@
 // Server-only: send transactional email via Resend's HTTP API.
 //
-// Requires RESEND_API_KEY. The sender defaults to "Sonar <sonar@agfarms.dev>"
-// and can be overridden with SONAR_MAIL_FROM (the domain must be verified in
-// Resend).
+// Requires RESEND_API_KEY. The sender defaults to "Sonar <sonar@mattrickslauer.com>"
+// and can be overridden with SONAR_EMAIL_FROM (the domain must be verified in
+// Resend). The old SONAR_MAIL_FROM is deliberately not read: it still holds the
+// ZeptoMail-era agfarms.dev sender, which Resend can't send from.
 //
 // When the key is unset we DON'T fail — we log the code to the server console
 // so local dev / unconfigured demos still work.
 import { resend } from "./resend";
 
-const DEFAULT_FROM = "Sonar <sonar@agfarms.dev>";
+const DEFAULT_FROM = "Sonar <sonar@mattrickslauer.com>";
 
 /** True when Resend is configured (an API key is set). */
 export function emailConfigured(): boolean {
@@ -28,7 +29,7 @@ export async function sendOtpEmail(
     return;
   }
   await resend(key, fetchImpl).send({
-    from: process.env.SONAR_MAIL_FROM || DEFAULT_FROM,
+    from: process.env.SONAR_EMAIL_FROM || DEFAULT_FROM,
     to,
     subject: `Your Sonar sign-in code: ${code}`,
     text: `Your Sonar sign-in code is ${code}. It expires in 10 minutes.\n\nIf you didn't request this, you can ignore this email.`,
