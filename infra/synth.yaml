@@ -154,7 +154,7 @@ Resources:
         Fn::GetAtt:
           - FanoutConsumerFnServiceRole45DE317F
           - Arn
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
       Tags:
         - Key: app
           Value: sonar
@@ -304,7 +304,7 @@ Resources:
         Fn::GetAtt:
           - PromoteConsumerFnServiceRoleE67663B6
           - Arn
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
       Tags:
         - Key: app
           Value: sonar
@@ -449,7 +449,7 @@ Resources:
         Fn::GetAtt:
           - MeterConsumerFnServiceRoleA4B70B00
           - Arn
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
       Tags:
         - Key: app
           Value: sonar
@@ -579,7 +579,7 @@ Resources:
         Fn::GetAtt:
           - BotTickFnServiceRoleE165B56C
           - Arn
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
       Tags:
         - Key: app
           Value: sonar
