@@ -225,7 +225,7 @@ export class SonarStack extends cdk.Stack {
     // (DynamoDB, API Gateway Management API) but not pg or the DSQL signer.
     const dsqlLayer = new lambda.LayerVersion(this, "DsqlDepsLayer", {
       code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda", "layers", "dsql")),
-      compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
+      compatibleRuntimes: [lambda.Runtime.NODEJS_22_X],
       description: "pg + @aws-sdk/dsql-signer for the DSQL-touching consumers",
     });
 
@@ -234,7 +234,7 @@ export class SonarStack extends cdk.Stack {
     // bot-tick liveness Lambda. Neither is bundled in the Node 20 runtime.
     const anthropicLayer = new lambda.LayerVersion(this, "AnthropicDepsLayer", {
       code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda", "layers", "anthropic")),
-      compatibleRuntimes: [lambda.Runtime.NODEJS_20_X],
+      compatibleRuntimes: [lambda.Runtime.NODEJS_22_X],
       description: "@anthropic-ai/sdk + @aws-sdk/client-ssm for the bot-tick Lambda",
     });
 
@@ -244,7 +244,7 @@ export class SonarStack extends cdk.Stack {
       opts: { env?: Record<string, string>; layers?: lambda.ILayerVersion[] } = {},
     ) =>
       new lambda.Function(this, name, {
-        runtime: lambda.Runtime.NODEJS_20_X,
+        runtime: lambda.Runtime.NODEJS_22_X,
         handler: "index.handler",
         code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda", dir)),
         timeout: cdk.Duration.seconds(30),
