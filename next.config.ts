@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Self-contained server bundle for the AWS Lambda host (infra/lib/web-stack.ts).
+  output: "standalone",
+  outputFileTracingRoot: __dirname,
   // node-postgres relies on dynamic/optional requires that Next's server
   // bundler mangles, which breaks every Aurora DSQL query at runtime on
   // Vercel (while the AWS SDK / DynamoDB path bundles fine). Keep `pg` as a
