@@ -15,11 +15,10 @@ import { LngLat, distance, bearing } from "@/lib/geo";
 import { Waypoint, MediaKind, mediaViewUrl, isLive } from "@/lib/waypoints";
 import { cellAndNeighbors, encodeGeohash } from "@/lib/geohash";
 
-// Use SONAR_-prefixed config, NOT the bare AWS_* names: on Vercel the functions
-// run on AWS Lambda, which injects its own AWS_REGION and (Vercel-account)
-// credentials, and reserves the AWS_* env names. Reading those would query the
-// wrong region/account. SONAR_AWS_* are passed explicitly; when unset (local
-// dev) we fall back to the default credential chain (~/.aws), and the region
+// SONAR_-prefixed config, not the bare AWS_* names (Lambda reserves those). In
+// production SONAR_AWS_* are unset and the default credential chain is the web
+// Lambda's execution role; locally it is ~/.aws. SONAR_AWS_* remain as an
+// explicit override for local runs, and the region
 // falls back to AWS_REGION then us-east-1.
 const REGION =
   process.env.SONAR_REGION ?? process.env.AWS_REGION ?? "us-east-1";

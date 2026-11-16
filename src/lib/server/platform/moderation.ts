@@ -1,7 +1,7 @@
 // Sonar Platform — photo moderation before a post exists. Amazon Rekognition
 // reads the uploaded object straight from the media bucket. Off unless
 // SONAR_MODERATION=rekognition (needs rekognition:DetectModerationLabels and
-// s3:GetObject on tenants/* for the app's IAM user).
+// s3:GetObject on tenants/* for the web Lambda's role — see infra/lib/web-stack.ts).
 import { DetectModerationLabelsCommand, RekognitionClient } from "@aws-sdk/client-rekognition";
 import { mediaBucket } from "@/lib/server/media";
 

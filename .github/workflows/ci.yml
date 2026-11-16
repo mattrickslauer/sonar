@@ -27,7 +27,7 @@ jobs:
         env:
           # The app build doesn't call the session signer, but provide a valid
           # secret + public vars so nothing trips. Real values come from the
-          # deploy platform (Vercel) / repo secrets.
+          # web env file at deploy (infra/scripts/web-deploy.sh) / repo secrets.
           SONAR_SESSION_SECRET: ${{ secrets.SONAR_SESSION_SECRET || 'ci-placeholder-secret-at-least-32-characters' }}
           NEXT_PUBLIC_MAPBOX_TOKEN: pk.ci-placeholder
           NEXT_PUBLIC_WS_URL: wss://ci.example/live

@@ -43,6 +43,11 @@ const PLATFORM_UPLOAD_ORIGINS = [
 ];
 
 export class SonarStack extends cdk.Stack {
+  /** Shared with SonarWebStack, which grants its Lambda role access to them. */
+  public readonly table: dynamodb.Table;
+  public readonly mediaBucket: s3.Bucket;
+  public readonly dsqlClusterArn: string;
+
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
@@ -88,21 +93,11 @@ export class SonarStack extends cdk.Stack {
       resources: [dsqlCluster.attrResourceArn],
     });
 
-    // The Next/Vercel server connects to DSQL as the least-privilege `sonar_app`
-    // role (NOT admin), so it only needs the non-admin `dsql:DbConnect` action.
-    // The sonar-vercel IAM user is managed outside CDK (see docs/prod-deploy);
-    // mint a policy doc the operator attaches to it, so the cluster ARN is wired
-    // without hardcoding. The Postgres role itself + the IAM↔role link are set up
-    // once via infra/sql/000_app_role.sql.
-    const dsqlUserPolicy = new iam.PolicyDocument({
-      statements: [
-        new iam.PolicyStatement({
-          sid: "SonarDsqlConnect",
-          actions: ["dsql:DbConnect"],
-          resources: [dsqlCluster.attrResourceArn],
-        }),
-      ],
-    });
+    // The web server (SonarWebStack's Lambda) connects to DSQL as the
+    // least-privilege `sonar_app` role (NOT admin) with `dsql:DbConnect`, granted
+    // to its execution role there. The Postgres role and its IAM link are set up
+    // via infra/sql/000_app_role.sql (+ 012 for an existing cluster).
+    this.dsqlClusterArn = dsqlCluster.attrResourceArn;
 
     // ---------------------------------------------------------------------
     // S3 — media blobs (photo/video/voice)
@@ -117,7 +112,7 @@ export class SonarStack extends cdk.Stack {
     // objects expire after 2 days (max waypoint lifespan is 24h, with buffer),
     // and dangling multipart uploads are aborted after 1 day.
     //
-    // Explicit name so the env var (SONAR_MEDIA_BUCKET) and the sonar-vercel IAM
+    // Explicit name so the env var (SONAR_MEDIA_BUCKET) and the web Lambda's IAM
     // policy can reference it ahead of deploy. ACCOUNT_ID keeps it globally
     // unique. CORS allows the browser presigned POST/GET from the app origins;
     // add preview-deploy origins here as needed.
@@ -148,7 +143,6 @@ export class SonarStack extends cdk.Stack {
           allowedOrigins: [
             "https://mysonar.zone",
             "https://www.mysonar.zone",
-            "https://sonar-bay.vercel.app", // legacy Vercel host (kept during cutover)
             // Local dev: Next falls back to 3001/3002 when 3000 is taken, so allow
             // the common range or the presigned media upload fails CORS.
             "http://localhost:3000",
@@ -167,28 +161,11 @@ export class SonarStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
-    // The Vercel functions sign uploads/reads with the external sonar-vercel IAM
-    // user (managed outside CDK — see docs/prod-deploy / the inline policy). Mint
-    // a least-privilege policy document the operator can attach to that user, so
-    // the bucket ARN is wired without hardcoding it.
-    const mediaUserPolicy = new iam.PolicyDocument({
-      statements: [
-        new iam.PolicyStatement({
-          sid: "SonarMediaObjectRW",
-          actions: ["s3:PutObject", "s3:GetObject"],
-          // tenants/* = Sonar Platform tenants' media (docs/platform/api.md);
-          // outside media/ so its 2-day expiry never takes a permanent pin's photo.
-          resources: [mediaBucket.arnForObjects("media/*"), mediaBucket.arnForObjects("tenants/*")],
-        }),
-        // Platform photo moderation (SONAR_MODERATION=rekognition). Rekognition
-        // has no resource-level permissions for this action.
-        new iam.PolicyStatement({
-          sid: "SonarPlatformModeration",
-          actions: ["rekognition:DetectModerationLabels"],
-          resources: ["*"],
-        }),
-      ],
-    });
+    // The web server's Lambda role is granted object read/write on media/* and
+    // tenants/* (Sonar Platform tenants' media, outside media/ so its 2-day
+    // expiry never takes a permanent pin's photo) in SonarWebStack.
+    this.mediaBucket = mediaBucket;
+    this.table = table;
 
     // ---------------------------------------------------------------------
     // CloudFront — media CDN (signed URLs over the private bucket)
@@ -202,7 +179,7 @@ export class SonarStack extends cdk.Stack {
     //
     // Signed URLs need an RSA key pair. Provide the PUBLIC key (PEM) at deploy
     // via context (`-c cfPublicKey="$(cat cf_public_key.pem)"`) or the
-    // SONAR_CF_PUBLIC_KEY env var; keep the PRIVATE key in Vercel/SSM for the app
+    // SONAR_CF_PUBLIC_KEY env var; keep the PRIVATE key in the web env file (SONAR_CF_PRIVATE_KEY) for the app
     // to sign with. Without a public key the CDN is skipped and the app falls
     // back to presigned S3 GETs, so this is additive and CI `cdk synth` stays
     // green without the key.
@@ -392,7 +369,7 @@ export class SonarStack extends cdk.Stack {
       throw new Error(
         "SONAR_SESSION_SECRET (>= 32 chars) must be set in the deploy environment " +
           "so the WebSocket authorizer can verify session tickets. Use the SAME " +
-          "value as the Next/Vercel server (SONAR_SESSION_SECRET).",
+          "value as the web server (SONAR_SESSION_SECRET).",
       );
     }
     const wsAuthorizerFn = makeFn("WsAuthorizerFn", "ws-authorizer", {
@@ -502,21 +479,11 @@ export class SonarStack extends cdk.Stack {
           "CloudFront public key id for signed URLs (set as SONAR_CF_KEY_PAIR_ID)",
       });
     }
-    new cdk.CfnOutput(this, "MediaUserPolicyJson", {
-      value: cdk.Stack.of(this).toJsonString(mediaUserPolicy.toJSON()),
-      description:
-        "Least-privilege S3 policy to attach to the sonar-vercel IAM user",
-    });
     new cdk.CfnOutput(this, "TableStreamArn", { value: table.tableStreamArn ?? "" });
     new cdk.CfnOutput(this, "DsqlClusterArn", { value: dsqlCluster.attrResourceArn });
     new cdk.CfnOutput(this, "DsqlEndpoint", {
       value: dsqlEndpoint,
       description: "Set as SONAR_DSQL_ENDPOINT for the Next server's account path",
-    });
-    new cdk.CfnOutput(this, "DsqlUserPolicyJson", {
-      value: cdk.Stack.of(this).toJsonString(dsqlUserPolicy.toJSON()),
-      description:
-        "Least-privilege dsql:DbConnect policy to attach to the sonar-vercel IAM user",
     });
     new cdk.CfnOutput(this, "StripeWebhookUrl", {
       value: stripeWebhookUrl.url,

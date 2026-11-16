@@ -7,14 +7,17 @@ import { SonarWebStack } from "../lib/web-stack";
 const app = new cdk.App();
 
 // All Sonar resources live in us-east-1 (co-located with Bedrock on-demand).
-new SonarStack(app, "SonarStack", {
+const data = new SonarStack(app, "SonarStack", {
   env: { region: "us-east-1" },
   description: "Sonar data layer: DynamoDB live path + Aurora DSQL system-of-record",
 });
 
-// The Next.js web app (formerly on Vercel). Deploy with infra/scripts/web-deploy.sh.
+// The Next.js web app on Lambda + CloudFront. Deploy with infra/scripts/web-deploy.sh.
 new SonarWebStack(app, "SonarWebStack", {
   env: { region: "us-east-1" },
+  table: data.table,
+  mediaBucket: data.mediaBucket,
+  dsqlClusterArn: data.dsqlClusterArn,
   description: "Sonar web: Next.js standalone on Lambda behind CloudFront",
 });
 

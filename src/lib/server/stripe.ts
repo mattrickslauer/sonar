@@ -3,7 +3,7 @@
 // lives in DSQL (see ./subscriptions.ts) so the app can gate the permanent-
 // waypoint feature without a Stripe call on the hot path.
 //
-// CONFIG (set in .env.local / Vercel — the user supplies the keys):
+// CONFIG (set in .env.local / the web env file — the user supplies the keys):
 //   STRIPE_SECRET_KEY      sk_… secret key. Server-only; never sent to the client.
 //   STRIPE_WEBHOOK_SECRET  whsec_… signing secret for /api/billing/webhook.
 //   STRIPE_PRICE_ID        price_… the recurring price the subscription buys.

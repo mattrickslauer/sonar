@@ -419,8 +419,8 @@ export async function setChannelBillingStatus(channelId: string, status: string)
 
 // ---------------------------------------------------------------------------
 // In-process channel-set cache. Channels are tiny + change rarely; a short TTL
-// keeps DSQL off the hot radar read path. Per-instance (Vercel functions are
-// single-flight), and force-refresh-on-miss closes the create→drop window.
+// keeps DSQL off the hot radar read path. Per-instance (each web Lambda instance
+// serves one request at a time), and force-refresh-on-miss closes the create→drop window.
 // ---------------------------------------------------------------------------
 
 const CHANNEL_CACHE_TTL_MS = 60_000;

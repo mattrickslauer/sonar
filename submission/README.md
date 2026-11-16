@@ -2,7 +2,7 @@
 
 Everything needed to submit **Sonar** to [H0: Hack the Zero Stack](https://h01.devpost.com) — and to argue, to a panel of AWS Database judges, that the database is the centerpiece.
 
-> **Track 3 · Million-scale Global App** · Live at **https://mysonar.zone** · **DynamoDB + Aurora DSQL** on Vercel.
+> **Track 3 · Million-scale Global App** · Live at **https://mysonar.zone** · **DynamoDB + Aurora DSQL**, all on AWS.
 
 ## What's here
 
@@ -30,5 +30,5 @@ Brand assets (logo, colors, type, the image-gen prompt pack) live in [`../brand/
 1. Open `DECK.html`, present/refine, export to PDF.
 2. Shoot the video from `VIDEO_SCRIPT.md` (record the **like → timer jump** shot first).
 3. Capture the AWS console screenshots (`SUBMISSION_CHECKLIST.md`).
-4. Paste `DEVPOST.md` into Devpost; add Vercel link + Team ID; attach diagram + screenshots.
+4. Paste `DEVPOST.md` into Devpost; attach diagram + screenshots.
 5. Walk the final polish pass in `SUBMISSION_CHECKLIST.md`.

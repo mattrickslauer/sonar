@@ -5,8 +5,8 @@ const nextConfig: NextConfig = {
   output: "standalone",
   outputFileTracingRoot: __dirname,
   // node-postgres relies on dynamic/optional requires that Next's server
-  // bundler mangles, which breaks every Aurora DSQL query at runtime on
-  // Vercel (while the AWS SDK / DynamoDB path bundles fine). Keep `pg` as a
+  // bundler mangles, which breaks every Aurora DSQL query at runtime in the
+  // standalone server (while the AWS SDK / DynamoDB path bundles fine). Keep `pg` as a
   // runtime require from node_modules instead of bundling it.
   // `stripe` (like `pg`) does dynamic requires the server bundler mishandles;
   // keep it a runtime node_modules require.

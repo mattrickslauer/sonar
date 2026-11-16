@@ -44,7 +44,7 @@ Some data is relational and must be correct: **accounts**, **subscriptions / spo
 
 **The clinching architecture decision:** geofencing + a 24-hour window bound every "ask the place" AI query's context small enough to answer in a **single model call** — so **there is no vector database.** The data model is the scaling strategy.
 
-**The rest of the stack:** Next.js 16 on **Vercel** (mobile-first Mapbox radar UI, server routes, app-router); API Gateway **WebSockets** + a Lambda authorizer for real-time delivery and connection access control; **Amazon S3 + CloudFront** for media (presigned uploads to a private bucket; reads served from the CloudFront edge via short-lived signed URLs, so media stays gated — and never touches DynamoDB's 400 KB item cap); **Amazon Bedrock (Claude Haiku)** for "ask the place" (authenticated with the same IAM identity as the data layer — no separate API key); **Stripe** for sponsorships. All AWS infra is **AWS CDK** (one stack), us-east-1.
+**The rest of the stack:** Next.js 16 on **AWS Lambda behind CloudFront** (mobile-first Mapbox radar UI, server routes, app-router); API Gateway **WebSockets** + a Lambda authorizer for real-time delivery and connection access control; **Amazon S3 + CloudFront** for media (presigned uploads to a private bucket; reads served from the CloudFront edge via short-lived signed URLs, so media stays gated — and never touches DynamoDB's 400 KB item cap); **Amazon Bedrock (Claude Haiku)** for "ask the place" (authenticated with the same IAM identity as the data layer — no separate API key); **Stripe** for sponsorships. All AWS infra is **AWS CDK** (one stack), us-east-1.
 
 ## Who it's for & why it matters
 Anyone in a **dense, lively, time-sensitive place** — festival-goers, students on a campus, conference attendees, a neighborhood during an event. The question Sonar answers — *"is it worth going over there, right now?"* — is universal and currently unanswered by all-permanent feeds. The same engine runs **Sonar for Work**: a workplace coordination layer for office parks and multi-tenant buildings (see the B2B outline).
@@ -69,8 +69,6 @@ Pick the database for the access pattern, not the other way around. A high-write
 
 ## Required submission facts (copy verbatim)
 - **AWS Database(s):** Amazon **DynamoDB** (primary — geohash-partitioned, TTL-driven ephemeral radar with Streams) and Amazon **Aurora DSQL** (relational system-of-record — accounts, subscriptions/sponsorships, billing & analytics).
-- **Frontend deploy:** Vercel — **https://mysonar.zone**
-- **Vercel Project Link:** `<paste from Vercel dashboard>`
-- **Vercel Team ID:** `<paste from Vercel → Settings → General → Team ID>`
+- **Frontend deploy:** AWS Lambda + CloudFront — **https://mysonar.zone**
 - **Architecture diagram:** `ARCHITECTURE_DIAGRAM.pdf` (repo root); a clean frame can also be exported from `submission/DECK.html`.
 - **DB-usage screenshot:** AWS console — DynamoDB `sonar` table + Aurora DSQL cluster (us-east-1). See `submission/SUBMISSION_CHECKLIST.md` for exactly which screenshots to capture.

@@ -1,4 +1,4 @@
-// Server-only: the Next/Vercel server's connection to Aurora DSQL — the
+// Server-only: the web server's connection to Aurora DSQL — the
 // relational system-of-record (accounts and other durable user data). The hot,
 // ephemeral path stays in DynamoDB (see ./waypoints.ts); anything that must
 // outlive a 24h TTL lives here.
@@ -16,8 +16,8 @@
 //   - IAM auth tokens are short-lived (~15 min). We pass `password` as an async
 //     function so node-postgres mints a FRESH token for every new physical
 //     connection — no stale-token reconnect failures, no token kept in memory.
-//   - No secret in env: auth is the caller's IAM identity (the scoped
-//     `sonar-vercel` user via SONAR_AWS_*), the same credentials the DynamoDB
+//   - No secret in env: auth is the caller's IAM identity (the
+//     web Lambda's execution role in production), the same credentials the DynamoDB
 //     path already uses.
 import { setDefaultResultOrder } from "node:dns";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
@@ -29,12 +29,12 @@ import { DsqlSigner } from "@aws-sdk/dsql-signer";
 setDefaultResultOrder("ipv4first");
 
 // Mirror waypoints.ts: SONAR_-prefixed config, never the bare AWS_* names that
-// Vercel/Lambda reserve and inject for their own account.
+// Lambda reserves and injects.
 const REGION = process.env.SONAR_REGION ?? process.env.AWS_REGION ?? "us-east-1";
 const ENDPOINT = process.env.SONAR_DSQL_ENDPOINT; // <cluster-id>.dsql.<region>.on.aws
 const DATABASE = process.env.SONAR_DSQL_DATABASE ?? "postgres";
 const USER = process.env.SONAR_DSQL_USER ?? "sonar_app";
-// Small pool: Vercel functions are single-request-at-a-time per instance, and
+// Small pool: each web Lambda instance serves one request at a time, and
 // DSQL connections are cheap to (re)open. Keep it tight so we don't fan out
 // idle connections across warm containers.
 const MAX = Number(process.env.SONAR_DSQL_POOL_MAX ?? "2");

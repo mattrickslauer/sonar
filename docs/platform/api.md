@@ -141,5 +141,5 @@ online, the mesh syncs to Sonar. Same API, same posts, no internet required.
   `T#<tenant>#PLACE#<place>`; likes `T#<tenant>#WP#<ulid>` / `LOVE#<user>`; tenant `TENANT#<id>`; keys
   `APIKEY#<sha256>`; usage `T#<tenant>#USAGE` / `<yyyymmddhh>`; rate `T#<tenant>#RATE` / `<yyyymmddhhmm>`.
 - Media under `tenants/<tenant>/` (not `media/`, which expires after 2 days — sponsored pins need their photo).
-- Moderation needs `SONAR_MODERATION=rekognition` and `rekognition:DetectModerationLabels` on the app's IAM user;
+- Moderation needs `SONAR_MODERATION=rekognition` and `rekognition:DetectModerationLabels` on the web Lambda's role (granted in `infra/lib/web-stack.ts`);
   unset, posts carry `"moderation": "off"`.

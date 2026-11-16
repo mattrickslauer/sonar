@@ -11,9 +11,6 @@ dist/
 build/
 *.tsbuildinfo
 
-# Vercel
-.vercel
-
 # Env / secrets
 .env
 .env.*

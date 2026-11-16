@@ -57,7 +57,7 @@ Subscribing opens a real-time scope; new waypoints on that channel are pushed li
 
 ```
                   ┌────────────────────────────┐
-                  │    Vercel / v0 (Next.js)    │  mobile-first radar UI
+                  │   Next.js on AWS Lambda    │  mobile-first radar UI  (CloudFront in front)
                   └───┬────────────────────┬────┘
    drop / ask / post  │                    │  WebSocket — subscribe to channels,
    (REST)             │                    │  receive live pushes
@@ -135,7 +135,7 @@ You pay only for what your channel uses — there is no flat fee or seat minimum
 
 ## Stack
 
-Next.js (v0) · Vercel · Amazon DynamoDB · Amazon Aurora DSQL · Amazon API Gateway (WebSockets) · AWS Lambda · Amazon S3 · CloudFront · Amazon Bedrock (Claude) · Stripe (sponsorship + usage-based billing)
+Next.js (v0) on AWS Lambda + CloudFront · Amazon DynamoDB · Amazon Aurora DSQL · Amazon API Gateway (WebSockets) · AWS Lambda · Amazon S3 · CloudFront · Amazon Bedrock (Claude) · Stripe (sponsorship + usage-based billing)
 
 ## Development
 

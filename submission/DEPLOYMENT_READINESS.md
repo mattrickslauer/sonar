@@ -8,7 +8,7 @@
 ## What's genuinely production-grade today
 | Area | Status | Evidence |
 |---|---|---|
-| Frontend deploy | ✅ Live on Vercel, custom domain `mysonar.zone`, Next.js 16 app-router | `curl` → 200; metadata + OG served |
+| Frontend deploy | ✅ Live on AWS (Next.js standalone on Lambda behind CloudFront, `SonarWebStack`), custom domain `mysonar.zone`, Next.js 16 app-router | `curl` → 200; metadata + OG served |
 | Primary database | ✅ DynamoDB `sonar`, **on-demand** capacity — scales with traffic, no provisioning | `infra/lib/sonar-stack.ts` |
 | Geo + ephemerality | ✅ Geohash partition keys; native **TTL**; likes = atomic `ADD ttl 300` | server waypoint code |
 | Relational SoR | ✅ Aurora DSQL, **IAM-native auth** (no passwords), **least-privilege** `sonar_app` role (no DELETE/DDL) | `infra/sql/000_app_role.sql`, `dsql.ts` |
@@ -39,5 +39,6 @@ cd infra
 npm install
 npm run deploy          # cdk deploy SonarStack  (DynamoDB, DSQL, S3, WS API, Lambdas)
 npm run migrate         # apply infra/sql/*.sql to the new DSQL cluster
-# → copy CDK outputs (WsApiEndpoint, MediaBucketName, DsqlEndpoint) into Vercel env, redeploy frontend
+# → copy CDK outputs (WsApiEndpoint, DsqlEndpoint, …) into the web env file
+bash scripts/web-deploy.sh <web-env-file> [cert-arn]   # SonarWebStack: Lambda + CloudFront
 ```

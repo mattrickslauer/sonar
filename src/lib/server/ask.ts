@@ -1,8 +1,9 @@
 // "Ask the place" — answers a free-text question about a place using Claude
 // Haiku 4.5 on **Amazon Bedrock**, grounded strictly in the live waypoints the
-// caller can currently see. The Bedrock client authenticates with the same
-// SONAR_-prefixed IAM identity the DynamoDB / DSQL / S3 clients use (no separate
-// API key), so the AI runs inside the same AWS account as the data layer. Any
+// caller can currently see. The Bedrock client authenticates as the same AWS
+// identity as the DynamoDB / DSQL / S3 clients (the web Lambda's role in
+// production, ~/.aws locally; no separate API key), so the AI runs inside the
+// same AWS account as the data layer. Any
 // failure (no credentials, model-access not enabled, API error, empty
 // completion) degrades to a deterministic local synthesis so the interaction
 // always returns a real, grounded answer.
@@ -26,21 +27,19 @@ const accessKeyId = process.env.SONAR_AWS_ACCESS_KEY_ID;
 const secretAccessKey = process.env.SONAR_AWS_SECRET_ACCESS_KEY;
 
 let client: AnthropicBedrock | null = null;
-function getClient(): AnthropicBedrock | null {
-  if (!accessKeyId || !secretAccessKey) return null;
-  if (!client) {
-    client = new AnthropicBedrock({
-      awsAccessKey: accessKeyId,
-      awsSecretKey: secretAccessKey,
-      awsSessionToken: process.env.SONAR_AWS_SESSION_TOKEN,
-      awsRegion: REGION,
-    });
-  }
+function getClient(): AnthropicBedrock {
+  // Explicit SONAR_AWS_* keys when set (an override for local runs); otherwise
+  // the default credential chain: the Lambda's role in production.
+  client ??=
+    accessKeyId && secretAccessKey
+      ? new AnthropicBedrock({
+          awsAccessKey: accessKeyId,
+          awsSecretKey: secretAccessKey,
+          awsSessionToken: process.env.SONAR_AWS_SESSION_TOKEN,
+          awsRegion: REGION,
+        })
+      : new AnthropicBedrock({ awsRegion: REGION });
   return client;
-}
-
-export function askConfigured(): boolean {
-  return !!(accessKeyId && secretAccessKey);
 }
 
 export interface AskResult {
@@ -57,7 +56,6 @@ export async function askPlace(opts: {
   const waypoints = rankWaypoints(opts.waypoints, MAX_WAYPOINTS);
 
   const api = getClient();
-  if (!api) return { answer: synthesizeAnswer(waypoints), source: "fallback" };
 
   const signals = waypoints
     .map((w) => {
