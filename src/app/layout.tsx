@@ -137,6 +137,8 @@ export default function RootLayout({
           // Static, trusted content — safe to inline as JSON-LD.
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
+        {/* Shared visit counter for every mattrickslauer site (~/Code/tally). */}
+        <script src="https://t.mattrickslauer.com/t.js" defer />
         {children}
       </body>
     </html>
