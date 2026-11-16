@@ -110,6 +110,9 @@ exports.handler = async (event) => {
     if (record.eventName !== "INSERT") continue;
     const sk = record.dynamodb?.Keys?.SK?.S || "";
     if (!sk.startsWith("WP#")) continue; // only waypoints fan out
+    // Platform tenants' posts (PK `T#<tenant>#...`) belong to their own app and
+    // must never reach mysonar.zone radar sockets, even on a same-named channel.
+    if ((record.dynamodb?.Keys?.PK?.S || "").startsWith("T#")) continue;
 
     const wp = payloadFromImage(record.dynamodb?.NewImage || {});
     if (!wp.channel || !wp.id) continue;

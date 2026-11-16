@@ -115,3 +115,32 @@ export async function viewUrl(key: string): Promise<string> {
     { expiresIn: VIEW_EXPIRY_SECONDS },
   );
 }
+
+/**
+ * Sonar Platform: an upload ticket for a tenant. Keys live under
+ * `tenants/<tenant>/` — outside `media/`, whose lifecycle rule deletes objects
+ * after two days, because a tenant's permanent (sponsored) post keeps its photo.
+ */
+export async function createTenantUpload(
+  tenant: string,
+  kind: UploadKind,
+  contentType: string,
+): Promise<UploadTicket> {
+  const key = `tenants/${tenant}/${randomBytes(16).toString("hex")}.${extForMime(contentType)}`;
+  const { url, fields } = await createPresignedPost(s3, {
+    Bucket: BUCKET,
+    Key: key,
+    Conditions: [
+      ["content-length-range", 1, MEDIA_LIMITS[kind].maxBytes],
+      ["eq", "$Content-Type", contentType],
+    ],
+    Fields: { "Content-Type": contentType },
+    Expires: UPLOAD_EXPIRY_SECONDS,
+  });
+  return { key, url, fields };
+}
+
+/** The bucket media lives in (the moderation check reads the object from it). */
+export function mediaBucket(): string {
+  return BUCKET;
+}

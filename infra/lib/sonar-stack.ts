@@ -33,6 +33,15 @@ import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
  * generator: the bot liveness tick, its PRESENCE feed, and the seeded media
  * that fed it were removed once Sonar stopped being a demo.
  */
+// Browser origins of Sonar Platform tenants (S3 CORS is per bucket, so a new
+// tenant's origins are added here and deployed). puq.city: the guide, its
+// dev site and member shops (<slug>.puq.city), plus `astro dev`.
+const PLATFORM_UPLOAD_ORIGINS = [
+  "https://puq.city",
+  "https://*.puq.city",
+  "http://localhost:4321",
+];
+
 export class SonarStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -145,6 +154,9 @@ export class SonarStack extends cdk.Stack {
             "http://localhost:3000",
             "http://localhost:3001",
             "http://localhost:3002",
+            // Sonar Platform tenants whose users upload straight from the browser
+            // with a ticket from POST /api/v1/media (docs/platform/api.md).
+            ...PLATFORM_UPLOAD_ORIGINS,
           ],
           exposedHeaders: ["ETag"],
           maxAge: 3600,
@@ -164,7 +176,16 @@ export class SonarStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "SonarMediaObjectRW",
           actions: ["s3:PutObject", "s3:GetObject"],
-          resources: [mediaBucket.arnForObjects("media/*")],
+          // tenants/* = Sonar Platform tenants' media (docs/platform/api.md);
+          // outside media/ so its 2-day expiry never takes a permanent pin's photo.
+          resources: [mediaBucket.arnForObjects("media/*"), mediaBucket.arnForObjects("tenants/*")],
+        }),
+        // Platform photo moderation (SONAR_MODERATION=rekognition). Rekognition
+        // has no resource-level permissions for this action.
+        new iam.PolicyStatement({
+          sid: "SonarPlatformModeration",
+          actions: ["rekognition:DetectModerationLabels"],
+          resources: ["*"],
         }),
       ],
     });

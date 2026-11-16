@@ -17,6 +17,14 @@ Two things make it more than a social map:
 1. **Ask the place** — AI summarizes and answers questions over a location's last 24 hours. *"What's the vibe at the north stage?" · "Where's the shortest food line?"*
 2. **Likes buy time; sponsors buy permanence** — every like adds **+5 minutes** to a waypoint's countdown (uncapped), so the crowd keeps the good stuff alive minute by minute. Nothing user-posted lasts forever. The single exception is a **sponsored permanent waypoint** — a paid pin that never expires and carries the sponsor's name. Permanence isn't earned by love; it's purchased by sponsors.
 
+## Sonar Platform (new)
+
+Sonar's engine is also a paid, invisible backend for other apps, the way Stripe is for payments: a tenant gets an API
+key, keeps its own users and brand, and calls `/api/v1` for place-anchored posts, likes that buy time, sponsored
+permanent pins, photo uploads with moderation and usage metering. Tenants' data never mixes with the mysonar.zone
+radar. API: [`docs/platform/api.md`](docs/platform/api.md) · public page: [`/landing`](https://mysonar.zone/landing) ·
+tenants and keys: `node scripts/platform-tenant.mjs`. First tenant: puq.city.
+
 ## Two flavors, one engine
 
 - **Sonar** — consumer. Hyperlocal place-memory for dense, lively places. Built-in contexts: 🎪 **Festival** · 🎓 **Campus**.
