@@ -6,6 +6,7 @@
 # ignored: the Lambda runs as its own role (infra/lib/web-stack.ts).
 # Shared secrets come from SSM (us-east-1) unless the env file sets them:
 #   RESEND_API_KEY  <- /resend/api-key   (OTP email; unset => codes are logged)
+#   TALLY_KEY       <- /sonar/tally-key  (server analytics; unset => off)
 set -euo pipefail
 ENV_FILE=$(realpath "$1"); CERT_ARN=${2:-}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -29,6 +30,7 @@ ssm_env() { # <VAR> <ssm-name>
   fi
 }
 ssm_env RESEND_API_KEY /resend/api-key
+ssm_env TALLY_KEY /sonar/tally-key
 
 npm run build
 

@@ -3,6 +3,7 @@
 // the client never touches card data or a Stripe SDK.
 import type { ChannelId } from "./channels";
 import type { MediaKind, Waypoint } from "./waypoints";
+import { capture } from "./tally";
 
 export interface PermanentSubscription {
   status: string;
@@ -58,6 +59,9 @@ export async function createPermanentWaypoint(
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error ?? `error ${res.status}`);
+  // A Checkout URL means the first $5/mo pin; later pins are bought one-click
+  // and counted server-side as a purchase.
+  if (data?.url) capture("checkout", { product: "permanent_pin" });
   return data as { url?: string; waypoint?: Waypoint };
 }
 

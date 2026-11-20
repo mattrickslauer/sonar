@@ -1,5 +1,6 @@
 import { ChannelId } from "./channels";
 import { LngLat, bearing, distance } from "./geo";
+import { capture } from "./tally";
 
 export type MediaKind = "text" | "photo" | "video" | "voice";
 
@@ -237,6 +238,7 @@ export async function postDrop(input: {
     throw new Error(data?.error ?? `postDrop failed: ${res.status}`);
   }
   const data = await res.json();
+  capture("drop", { kind: input.kind, permanent: Boolean(input.permanent), media: Boolean(input.mediaKey) });
   return data.waypoint as Waypoint;
 }
 
@@ -354,6 +356,7 @@ export async function postLove(input: LoveArgs): Promise<LoveResult> {
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new Error(`postLove failed: ${res.status}`);
+  capture("love");
   return (await res.json()) as LoveResult;
 }
 

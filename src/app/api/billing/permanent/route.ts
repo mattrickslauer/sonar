@@ -16,6 +16,7 @@ import {
   isActiveStatus,
 } from "@/lib/server/subscriptions";
 import { ensureCustomer, applyQuantity } from "@/lib/server/billing";
+import { track } from "@/lib/server/analytics";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -129,6 +130,11 @@ export async function POST(request: Request) {
       sponsored: true,
       sponsor: account.displayName,
       mediaKey: draft.mediaKey,
+    });
+    // Another $5/mo pin on the existing subscription (the first one is counted
+    // by the Stripe webhook when Checkout completes).
+    await track(account.id, "purchase", {
+      product: "permanent_pin", amount: 5, currency: "usd", quantity: newQty, path: "one_click",
     });
     return Response.json({ waypoint }, { status: 201 });
   }

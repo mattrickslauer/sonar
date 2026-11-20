@@ -1,6 +1,7 @@
 // Client-side helpers for the channel registry API. The server returns channel
 // objects shaped like the Channel interface ({ id, label, emoji, color, private }).
 import { Channel } from "@/lib/channels";
+import { capture } from "@/lib/tally";
 
 const VISIBLE_KEY = "sonar_channels";
 
@@ -87,6 +88,8 @@ export async function createOrJoinChannel(input: {
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error ?? `createOrJoinChannel failed: ${res.status}`);
+  if (data?.url) capture("checkout", { product: "locked_channel" });
+  else if (data?.created) capture("channel_create");
   return data as CreateChannelResult;
 }
 
