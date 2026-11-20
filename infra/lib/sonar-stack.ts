@@ -288,9 +288,11 @@ export class SonarStack extends cdk.Stack {
     // so it never enters git or the CloudFormation template and rotates without
     // a redeploy. The Lambda reads it at runtime.
     const stripeWebhookSecretParam = "/sonar/stripe/webhook-secret";
+    // tally's server key for this site (SecureString, minted by tally).
+    const tallyKeyParam = "/sonar/tally-key";
     const stripeWebhook = makeFn("StripeWebhookFn", "stripe-webhook", {
       layers: [dsqlLayer],
-      env: { WEBHOOK_SECRET_PARAM: stripeWebhookSecretParam },
+      env: { WEBHOOK_SECRET_PARAM: stripeWebhookSecretParam, TALLY_KEY_PARAM: tallyKeyParam },
     });
     stripeWebhook.addToRolePolicy(dsqlConnect); // admin DSQL auth
     // Needs the table to flip a paid pin to permanent and to cascade-expire the
@@ -302,6 +304,8 @@ export class SonarStack extends cdk.Stack {
         actions: ["ssm:GetParameter"],
         resources: [
           `arn:aws:ssm:${region}:${this.account}:parameter${stripeWebhookSecretParam}`,
+          // tally's server key: completed Checkouts are counted as purchases.
+          `arn:aws:ssm:${region}:${this.account}:parameter${tallyKeyParam}`,
         ],
       }),
     );

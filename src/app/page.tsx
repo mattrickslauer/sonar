@@ -36,6 +36,7 @@ import {
   type Account,
 } from "@/lib/auth";
 import { reverseGeocode } from "@/lib/geocode";
+import { identify, reset as resetAnalytics } from "@/lib/tally";
 import { createPermanentWaypoint, fetchPermanentConsole } from "@/lib/billing";
 import { DEFAULT_RANGE, RANGE_MAP, RangeMode } from "@/lib/range";
 import TopBar from "@/components/TopBar";
@@ -155,6 +156,12 @@ export default function Home() {
   useEffect(() => {
     fetchPermanentConsole().then((c) => setBillingConfigured(c.configured));
   }, [account]);
+
+  // Tie this browser's analytics to the signed-in account (its opaque id, the
+  // same one server-side signup/purchase events carry).
+  useEffect(() => {
+    if (account?.id) identify(account.id);
+  }, [account?.id]);
 
   // Returning from Stripe Checkout (`?billing=success`) → the webhook flips the
   // pending pin to permanent asynchronously, so re-poll nearby waypoints a few
@@ -902,6 +909,7 @@ export default function Home() {
             }}
             onSignOut={async () => {
               await logout();
+              resetAnalytics();
               setAccount(null);
               setClaimOpen(false);
             }}

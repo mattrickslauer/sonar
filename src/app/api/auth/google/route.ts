@@ -6,6 +6,7 @@ import {
   sessionConfigured,
 } from "@/lib/server/session";
 import { dsqlConfigured } from "@/lib/server/dsql";
+import { track } from "@/lib/server/analytics";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,6 +37,7 @@ export async function POST(request: Request) {
     authMethod: "google",
   });
   const token = await createSessionToken(account);
+  await track(account.id, claimed ? "signup" : "signin", { method: "google" });
   return Response.json(
     { account: { id: account.id, displayName: account.displayName }, claimed },
     { status: 200, headers: { "Set-Cookie": sessionCookie(token) } },

@@ -41,6 +41,9 @@ const REGION = process.env.AWS_REGION || "us-east-1";
 const DSQL_ENDPOINT = process.env.DSQL_ENDPOINT;
 const TABLE_NAME = process.env.TABLE_NAME;
 const WEBHOOK_SECRET_PARAM = process.env.WEBHOOK_SECRET_PARAM;
+// SSM SecureString with tally's server key for this site (optional: unset or
+// missing => no analytics).
+const TALLY_KEY_PARAM = process.env.TALLY_KEY_PARAM;
 // Reject events whose timestamp is older than this (replay protection).
 const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 // Far-future ttl for permanent pins (mirrors src/lib/server/waypoints.ts).
@@ -60,6 +63,51 @@ async function getWebhookSecret() {
   );
   cachedSecret = res.Parameter?.Value || "";
   return cachedSecret;
+}
+
+/**
+ * Count a completed Checkout as a `purchase` in tally (t.mattrickslauer.com),
+ * through its vendored SDK (tally-server.mjs; re-copy with infra/vendor-tally.sh).
+ * The user is the Sonar account id (client_reference_id), the id the page
+ * identifies with; no email or name is sent. Waits for the send (the Lambda is
+ * frozen on return) and never throws: analytics must not make Stripe retry.
+ */
+let tally; // undefined = not resolved yet, null = off
+async function trackPurchase(cs) {
+  try {
+    if (tally === undefined) {
+      tally = null;
+      if (TALLY_KEY_PARAM) {
+        const res = await ssm.send(
+          new GetParameterCommand({ Name: TALLY_KEY_PARAM, WithDecryption: true })
+        );
+        const key = res.Parameter && res.Parameter.Value;
+        if (key) {
+          const { Tally } = await import("./tally-server.mjs");
+          tally = new Tally({
+            key, flushAt: 100, flushInterval: 0, timeout: 1500,
+            onError: (err) => console.warn("[tally]", err.message),
+          });
+        }
+      }
+    }
+    if (!tally || !cs.client_reference_id) return;
+    const channel = /[?&]locked=success/.test(cs.success_url || "");
+    tally.capture({
+      distinctId: cs.client_reference_id,
+      event: "purchase",
+      properties: {
+        product: channel ? "locked_channel" : "permanent_pin",
+        amount: typeof cs.amount_total === "number" ? cs.amount_total / 100 : null,
+        currency: cs.currency || null,
+        livemode: Boolean(cs.livemode),
+        path: "checkout",
+      },
+    });
+    await tally.flush();
+  } catch (err) {
+    console.warn("[tally] purchase not sent:", err && err.message);
+  }
 }
 
 /**
@@ -323,10 +371,14 @@ exports.handler = async (event) => {
   let client;
   try {
     switch (stripeEvent.type) {
-      // checkout.session.completed is intentionally a no-op: we have no Stripe
-      // API key here to fetch the subscription, and the customer.subscription.*
-      // events (below) carry the authoritative status, quantity, and metadata.
+      // checkout.session.completed changes no state: we have no Stripe API key
+      // here to fetch the subscription, and the customer.subscription.* events
+      // (below) carry the authoritative status, quantity, and metadata. It is
+      // only counted as a purchase in analytics.
       case "checkout.session.completed":
+        if (stripeEvent.data.object.mode === "subscription") {
+          await trackPurchase(stripeEvent.data.object);
+        }
         break;
 
       case "customer.subscription.created":
