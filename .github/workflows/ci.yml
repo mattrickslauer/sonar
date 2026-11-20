@@ -47,6 +47,9 @@ jobs:
           cache-dependency-path: infra/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit
+      # SonarWebStack's Lambda asset is the Next bundle web-deploy.sh builds;
+      # synth only needs the directory to exist.
+      - run: mkdir -p web-bundle
       - run: npx cdk synth --quiet
         env:
           # The WS authorizer guard requires this at synth time (fails closed).
